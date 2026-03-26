@@ -17,7 +17,7 @@ export const LOLDLE_COMMAND = {
   name: 'loldle',
   description: 'Launch Loldle from the App Launcher',
   type: 4,
-  handler: 1,
+  handler: 2,
 };
 
 export const LOLDLE_SLASH_COMMAND = {
