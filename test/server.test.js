@@ -5,7 +5,11 @@ import {
   InteractionType,
   InteractionResponseFlags,
 } from 'discord-interactions';
-import { AWW_COMMAND, INVITE_COMMAND } from '../src/commands.js';
+import {
+  AWW_COMMAND,
+  INVITE_COMMAND,
+  LOLDLE_COMMAND,
+} from '../src/commands.js';
 import sinon from 'sinon';
 import server from '../src/server.js';
 import { redditUrl } from '../src/reddit.js';
@@ -27,14 +31,16 @@ describe('Server', () => {
   });
 
   describe('POST /', () => {
+    let sandbox;
     let verifyDiscordRequestStub;
 
     beforeEach(() => {
-      verifyDiscordRequestStub = sinon.stub(server, 'verifyDiscordRequest');
+      sandbox = sinon.createSandbox();
+      verifyDiscordRequestStub = sandbox.stub(server, 'verifyDiscordRequest');
     });
 
     afterEach(() => {
-      verifyDiscordRequestStub.restore();
+      sandbox.restore();
     });
 
     it('should handle a PING interaction', async () => {
@@ -80,9 +86,8 @@ describe('Server', () => {
       });
 
       // mock the fetch call to reddit
-      const result = sinon
-        // eslint-disable-next-line no-undef
-        .stub(global, 'fetch')
+      const result = sandbox
+        .stub(globalThis, 'fetch')
         .withArgs(redditUrl)
         .resolves({
           status: 200,
@@ -96,6 +101,46 @@ describe('Server', () => {
         InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       );
       expect(result.calledOnce);
+    });
+
+    it('should handle a loldle command interaction', async () => {
+      const interaction = {
+        type: InteractionType.APPLICATION_COMMAND,
+        application_id: '123456789',
+        token: 'interaction-token',
+        data: {
+          name: LOLDLE_COMMAND.name,
+        },
+      };
+
+      const request = {
+        method: 'POST',
+        url: new URL('/', 'http://discordo.example'),
+      };
+
+      const followupUrl =
+        'https://discord.com/api/v10/webhooks/123456789/interaction-token';
+
+      verifyDiscordRequestStub.resolves({
+        isValid: true,
+        interaction,
+      });
+
+      const followupStub = sandbox.stub(globalThis, 'fetch').resolves({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: sinon.fake.resolves(''),
+      });
+
+      const response = await server.fetch(request, {});
+      const body = await response.json();
+      expect(body.type).to.equal(InteractionResponseType.LAUNCH_ACTIVITY);
+      expect(followupStub.calledOnce).to.equal(true);
+      expect(followupStub.firstCall.args[0]).to.equal(followupUrl);
+
+      const payload = JSON.parse(followupStub.firstCall.args[1].body);
+      expect(payload.embeds[0].title).to.equal('Loldle Activity Started');
     });
 
     it('should handle an invite command interaction', async () => {

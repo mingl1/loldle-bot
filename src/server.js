@@ -8,7 +8,7 @@ import {
   InteractionType,
   verifyKey,
 } from 'discord-interactions';
-import { AWW_COMMAND, INVITE_COMMAND } from './commands.js';
+import { AWW_COMMAND, INVITE_COMMAND, LOLDLE_COMMAND } from './commands.js';
 import { getCuteUrl } from './reddit.js';
 import { InteractionResponseFlags } from 'discord-interactions';
 
@@ -38,7 +38,7 @@ router.get('/', (request, env) => {
  * include a JSON payload described here:
  * https://discord.com/developers/docs/interactions/receiving-and-responding#interaction-object
  */
-router.post('/', async (request, env) => {
+router.post('/', async (request, env, context) => {
   const { isValid, interaction } = await server.verifyDiscordRequest(
     request,
     env,
@@ -78,6 +78,24 @@ router.post('/', async (request, env) => {
           },
         });
       }
+      case LOLDLE_COMMAND.name.toLowerCase(): {
+        const followupPromise = sendLoldleFollowup(interaction);
+        if (context && typeof context.waitUntil === 'function') {
+          context.waitUntil(
+            followupPromise.catch((error) => {
+              console.error('Error sending Loldle follow-up message:', error);
+            }),
+          );
+        } else {
+          followupPromise.catch((error) => {
+            console.error('Error sending Loldle follow-up message:', error);
+          });
+        }
+
+        return new JsonResponse({
+          type: InteractionResponseType.LAUNCH_ACTIVITY,
+        });
+      }
       default:
         return new JsonResponse({ error: 'Unknown Type' }, { status: 400 });
     }
@@ -103,9 +121,46 @@ async function verifyDiscordRequest(request, env) {
   return { interaction: JSON.parse(body), isValid: true };
 }
 
+async function sendLoldleFollowup(interaction) {
+  const applicationId = interaction.application_id;
+  const interactionToken = interaction.token;
+  if (!applicationId || !interactionToken) {
+    throw new Error(
+      'Missing application_id or interaction token for follow-up.',
+    );
+  }
+
+  const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}`;
+  const followupResponse = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      embeds: [
+        {
+          title: 'Loldle Activity Started',
+          description:
+            'The game is launching now. Use the Activity panel to join.',
+          color: 0x5865f2,
+        },
+      ],
+    }),
+  });
+
+  if (!followupResponse.ok) {
+    const errorBody = await followupResponse.text();
+    throw new Error(
+      `Discord follow-up API error: ${followupResponse.status} ${followupResponse.statusText}\n${errorBody}`,
+    );
+  }
+}
+
 const server = {
   verifyDiscordRequest,
-  fetch: router.fetch,
+  fetch(request, env, context) {
+    return router.fetch(request, env, context);
+  },
 };
 
 export default server;
