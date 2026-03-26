@@ -79,9 +79,6 @@ router.post('/', async (request, env, context) => {
         });
       }
       case LOLDLE_COMMAND.name.toLowerCase(): {
-        await sendLoldleFollowup(interaction).catch((error) => {
-          console.error('Error sending Loldle follow-up message:', error);
-        });
         return new JsonResponse({
           type: InteractionResponseType.LAUNCH_ACTIVITY,
         });
@@ -109,41 +106,6 @@ async function verifyDiscordRequest(request, env) {
   }
 
   return { interaction: JSON.parse(body), isValid: true };
-}
-
-async function sendLoldleFollowup(interaction) {
-  const applicationId = interaction.application_id;
-  const interactionToken = interaction.token;
-  if (!applicationId || !interactionToken) {
-    throw new Error(
-      'Missing application_id or interaction token for follow-up.',
-    );
-  }
-
-  const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}`;
-  const followupResponse = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      embeds: [
-        {
-          title: 'Loldle Activity Started',
-          description:
-            'The game is launching now. Use the Activity panel to join.',
-          color: 0x5865f2,
-        },
-      ],
-    }),
-  });
-
-  if (!followupResponse.ok) {
-    const errorBody = await followupResponse.text();
-    throw new Error(
-      `Discord follow-up API error: ${followupResponse.status} ${followupResponse.statusText}\n${errorBody}`,
-    );
-  }
 }
 
 const server = {
