@@ -79,19 +79,9 @@ router.post('/', async (request, env, context) => {
         });
       }
       case LOLDLE_COMMAND.name.toLowerCase(): {
-        const followupPromise = sendLoldleFollowup(interaction);
-        if (context && typeof context.waitUntil === 'function') {
-          context.waitUntil(
-            followupPromise.catch((error) => {
-              console.error('Error sending Loldle follow-up message:', error);
-            }),
-          );
-        } else {
-          followupPromise.catch((error) => {
-            console.error('Error sending Loldle follow-up message:', error);
-          });
-        }
-
+        await sendLoldleFollowup(interaction).catch((error) => {
+          console.error('Error sending Loldle follow-up message:', error);
+        });
         return new JsonResponse({
           type: InteractionResponseType.LAUNCH_ACTIVITY,
         });
