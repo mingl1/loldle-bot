@@ -11,6 +11,7 @@ import {
 import { AWW_COMMAND, INVITE_COMMAND, LOLDLE_COMMAND } from './commands.js';
 import { getCuteUrl } from './reddit.js';
 import { InteractionResponseFlags } from 'discord-interactions';
+import { sendLoldleProgressFollowup } from './progress.js';
 
 class JsonResponse extends Response {
   constructor(body, init) {
@@ -79,6 +80,21 @@ router.post('/', async (request, env, context) => {
         });
       }
       case LOLDLE_COMMAND.name.toLowerCase(): {
+        // Respond with LAUNCH_ACTIVITY immediately so Discord opens the Activity.
+        // Then post a follow-up with same-channel daily progress (Wordle-style).
+        // Entry Point stays handler:2 (Discord-native Launch) so App Launcher never
+        // depends on this worker; only CHAT_INPUT /loldle hits this branch.
+        const followupPromise = sendLoldleProgressFollowup(
+          interaction,
+          env,
+        ).catch((error) => {
+          console.error('Error sending Loldle progress follow-up:', error);
+        });
+
+        if (context && typeof context.waitUntil === 'function') {
+          context.waitUntil(followupPromise);
+        }
+
         return new JsonResponse({
           type: InteractionResponseType.LAUNCH_ACTIVITY,
         });

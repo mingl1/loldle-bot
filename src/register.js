@@ -116,6 +116,8 @@ async function syncScopeCommands(scopeLabel, url, desiredCommands) {
 
 async function main() {
   if (!guildId) {
+    // Keep BOTH the Entry Point (type 4, handler 2) and CHAT_INPUT /loldle.
+    // Never PUT/sync globals without the type-4 command — that deletes Launch.
     await syncScopeCommands('global', globalCommandsUrl, [
       LOLDLE_COMMAND,
       LOLDLE_SLASH_COMMAND,
@@ -123,7 +125,9 @@ async function main() {
     return;
   }
 
-  // Entry Point commands are global-only, while slash command is guild-first.
+  // Entry Point commands are global-only (Launch / App Launcher).
+  // handler:2 = DiscordLaunchActivity so Launch works even if this worker is down.
+  // Slash /loldle is guild-first and answered by the worker with LAUNCH_ACTIVITY.
   await syncScopeCommands('global entry-point', globalCommandsUrl, [
     LOLDLE_COMMAND,
   ]);

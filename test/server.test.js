@@ -13,6 +13,7 @@ import {
 import sinon from 'sinon';
 import server from '../src/server.js';
 import { redditUrl } from '../src/reddit.js';
+import { getDailyDateKey } from '../src/progress.js';
 
 describe('Server', () => {
   describe('GET /', () => {
@@ -103,11 +104,12 @@ describe('Server', () => {
       expect(result.calledOnce);
     });
 
-    it('should handle a loldle command interaction', async () => {
+    it('should launch Loldle and follow up with channel progress', async () => {
       const interaction = {
         type: InteractionType.APPLICATION_COMMAND,
         application_id: '123456789',
         token: 'interaction-token',
+        channel_id: 'channel-123',
         data: {
           name: LOLDLE_COMMAND.name,
         },
@@ -118,29 +120,81 @@ describe('Server', () => {
         url: new URL('/', 'http://discordo.example'),
       };
 
+      const env = {
+        PROGRESS_API_BASE_URL: 'https://progress.example',
+        PROGRESS_API_SECRET: 'test-secret',
+      };
+
+      const dateKey = getDailyDateKey();
       const followupUrl =
         'https://discord.com/api/v10/webhooks/123456789/interaction-token';
+      const progressUrl = `https://progress.example/channel-progress?channelId=channel-123&dateKey=${encodeURIComponent(dateKey)}`;
 
       verifyDiscordRequestStub.resolves({
         isValid: true,
         interaction,
       });
 
-      const followupStub = sandbox.stub(globalThis, 'fetch').resolves({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        text: sinon.fake.resolves(''),
+      const fetchStub = sandbox.stub(globalThis, 'fetch');
+      fetchStub.callsFake(async (url) => {
+        if (url === progressUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({
+              channelId: 'channel-123',
+              dateKey,
+              players: [
+                {
+                  userId: '1',
+                  username: 'Alice',
+                  guessCount: 3,
+                  solved: true,
+                },
+                {
+                  userId: '2',
+                  username: 'Bob',
+                  guessCount: 2,
+                  solved: false,
+                },
+              ],
+            }),
+            text: async () => '',
+          };
+        }
+        if (url === followupUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            text: async () => '',
+          };
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
       });
 
-      const response = await server.fetch(request, {});
+      const pending = [];
+      const context = {
+        waitUntil(promise) {
+          pending.push(promise);
+        },
+      };
+
+      const response = await server.fetch(request, env, context);
       const body = await response.json();
       expect(body.type).to.equal(InteractionResponseType.LAUNCH_ACTIVITY);
-      expect(followupStub.calledOnce).to.equal(true);
-      expect(followupStub.firstCall.args[0]).to.equal(followupUrl);
 
-      const payload = JSON.parse(followupStub.firstCall.args[1].body);
-      expect(payload.embeds[0].title).to.equal('Loldle Activity Started');
+      await Promise.all(pending);
+
+      expect(fetchStub.calledTwice).to.equal(true);
+      expect(fetchStub.firstCall.args[0]).to.equal(progressUrl);
+      expect(fetchStub.secondCall.args[0]).to.equal(followupUrl);
+
+      const payload = JSON.parse(fetchStub.secondCall.args[1].body);
+      expect(payload.embeds[0].title).to.equal(`Loldle — ${dateKey}`);
+      expect(payload.embeds[0].description).to.include('Alice');
+      expect(payload.embeds[0].description).to.include('Bob');
     });
 
     it('should handle an invite command interaction', async () => {
