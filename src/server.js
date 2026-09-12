@@ -11,7 +11,7 @@ import {
 import { AWW_COMMAND, INVITE_COMMAND, LOLDLE_COMMAND } from './commands.js';
 import { getCuteUrl } from './reddit.js';
 import { InteractionResponseFlags } from 'discord-interactions';
-import { sendLoldleProgressFollowup } from './progress.js';
+import { sendLoldleProgressFollowup, syncChannelProgress } from './progress.js';
 
 class JsonResponse extends Response {
   constructor(body, init) {
@@ -35,6 +35,59 @@ router.get('/', (request, env) => {
 });
 
 /**
+ * Progress API (Convex) can POST here after guesses so the channel board
+ * is edited in place instead of stacking new messages.
+ *
+ * Authorization: Bearer ${PROGRESS_API_SECRET}
+ * Body JSON: { "channelId": "...", "dateKey": "YYYY-MM-DD" }  // dateKey optional
+ */
+router.post('/sync-progress', async (request, env) => {
+  const auth = request.headers.get('Authorization') || '';
+  const expected = env.PROGRESS_API_SECRET
+    ? `Bearer ${env.PROGRESS_API_SECRET}`
+    : null;
+  if (!expected || auth !== expected) {
+    return new JsonResponse({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return new JsonResponse({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const channelId = payload?.channelId;
+  if (!channelId || typeof channelId !== 'string') {
+    return new JsonResponse(
+      { error: 'channelId is required' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const result = await syncChannelProgress(
+      {
+        channelId,
+        dateKey: payload.dateKey,
+      },
+      env,
+    );
+    return new JsonResponse({
+      ok: true,
+      action: result.action,
+      messageId: result.message?.id ?? null,
+    });
+  } catch (error) {
+    console.error('Error syncing channel progress:', error);
+    return new JsonResponse(
+      { error: 'Failed to sync progress' },
+      { status: 500 },
+    );
+  }
+});
+
+/**
  * Main route for all requests sent from Discord.  All incoming messages will
  * include a JSON payload described here:
  * https://discord.com/developers/docs/interactions/receiving-and-responding#interaction-object
@@ -50,7 +103,7 @@ router.post('/', async (request, env, context) => {
 
   if (interaction.type === InteractionType.PING) {
     // The `PING` message is used during the initial webhook handshake, and is
-    // required to configure the webhook in the developer portal.
+    // required to configure the webhook in the Discord developer portal.
     return new JsonResponse({
       type: InteractionResponseType.PONG,
     });
@@ -80,15 +133,16 @@ router.post('/', async (request, env, context) => {
         });
       }
       case LOLDLE_COMMAND.name.toLowerCase(): {
-        // Respond with LAUNCH_ACTIVITY immediately so Discord opens the Activity.
-        // Then post a follow-up with same-channel daily progress (Wordle-style).
-        // Entry Point stays handler:2 (Discord-native Launch) so App Launcher never
-        // depends on this worker; only CHAT_INPUT /loldle hits this branch.
+        // Launch the Activity immediately. Progress is upserted (edit-or-create)
+        // against today's single channel board — same idea as Wordle editing
+        // the interaction/channel message instead of spamming new ones.
+        // Entry Point stays handler:2 (Discord-native Launch) so App Launcher
+        // never depends on this worker; only CHAT_INPUT /loldle hits this branch.
         const followupPromise = sendLoldleProgressFollowup(
           interaction,
           env,
         ).catch((error) => {
-          console.error('Error sending Loldle progress follow-up:', error);
+          console.error('Error upserting Loldle progress message:', error);
         });
 
         if (context && typeof context.waitUntil === 'function') {
