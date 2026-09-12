@@ -8,6 +8,9 @@
 
 export const DAILY_TIME_ZONE = 'America/New_York';
 
+/** Re-sync after /loldle so the first launcher shows up without a second slash. */
+export const DEFAULT_LAUNCH_REFRESH_DELAYS_MS = [2500, 7000, 15000, 25000];
+
 export function getDailyDateKey(date = new Date()) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: DAILY_TIME_ZONE,
@@ -23,18 +26,28 @@ export function progressEmbedTitle(dateKey) {
   return `Loldle — ${dateKey}`;
 }
 
+export function normalizePlayer(player = {}) {
+  return {
+    userId: player.userId ?? player.user_id ?? player.id,
+    username: player.username ?? player.name ?? 'Unknown',
+    guessCount: player.guessCount ?? player.guess_count ?? player.guesses ?? 0,
+    solved: Boolean(player.solved ?? player.isSolved ?? false),
+  };
+}
+
 export function formatProgressLines(players = []) {
   if (!players.length) {
     return ["No one in this channel has started today's Loldle yet."];
   }
 
   return players.map((player) => {
-    const name = player.username || 'Unknown';
-    if (player.solved) {
-      const guesses = player.guessCount ?? '?';
+    const normalized = normalizePlayer(player);
+    const name = normalized.username || 'Unknown';
+    if (normalized.solved) {
+      const guesses = normalized.guessCount ?? '?';
       return `✅ **${name}** — ${guesses}/∞`;
     }
-    const guesses = player.guessCount ?? 0;
+    const guesses = normalized.guessCount ?? 0;
     return `🔄 **${name}** — ${guesses} guess${guesses === 1 ? '' : 'es'}`;
   });
 }
@@ -49,6 +62,65 @@ export function buildProgressEmbed({ dateKey, players }) {
       text: 'Same-channel progress for today (America/New_York)',
     },
   };
+}
+
+export function getLaunchPlayer(interaction) {
+  const user = interaction?.member?.user ?? interaction?.user;
+  if (!user?.id) {
+    return null;
+  }
+  return {
+    userId: user.id,
+    username: user.global_name || user.username || 'Unknown',
+    guessCount: 0,
+    solved: false,
+  };
+}
+
+export function mergeLaunchPlayer(players = [], launchPlayer) {
+  if (!launchPlayer) {
+    return players;
+  }
+  const alreadyTracked = players.some((player) => {
+    const normalized = normalizePlayer(player);
+    if (normalized.userId && normalized.userId === launchPlayer.userId) {
+      return true;
+    }
+    return (
+      normalized.username &&
+      launchPlayer.username &&
+      normalized.username.toLowerCase() === launchPlayer.username.toLowerCase()
+    );
+  });
+  if (alreadyTracked) {
+    return players;
+  }
+  return [...players, launchPlayer];
+}
+
+export function parseLaunchRefreshDelaysMs(
+  envValue,
+  fallback = DEFAULT_LAUNCH_REFRESH_DELAYS_MS,
+) {
+  if (envValue === undefined || envValue === null || envValue === '') {
+    return fallback;
+  }
+  if (Array.isArray(envValue)) {
+    return envValue.map(Number).filter((n) => Number.isFinite(n) && n >= 0);
+  }
+  try {
+    const parsed = JSON.parse(envValue);
+    if (!Array.isArray(parsed)) {
+      return fallback;
+    }
+    return parsed.map(Number).filter((n) => Number.isFinite(n) && n >= 0);
+  } catch {
+    return fallback;
+  }
+}
+
+export function sleep(ms, { setTimeoutFn = setTimeout } = {}) {
+  return new Promise((resolve) => setTimeoutFn(resolve, ms));
 }
 
 export async function fetchChannelProgress({
@@ -316,6 +388,7 @@ export async function loadProgressEmbed({
   env,
   channelId,
   dateKey = getDailyDateKey(),
+  launchPlayer = null,
   fetchImpl = fetch,
 }) {
   let players = [];
@@ -335,12 +408,14 @@ export async function loadProgressEmbed({
         dateKey,
         fetchImpl,
       });
-      players = payload.players ?? [];
+      players = (payload.players ?? []).map(normalizePlayer);
     } catch (error) {
       console.error('Failed to fetch channel progress:', error);
       descriptionExtra = '\n_Could not load channel progress right now._';
     }
   }
+
+  players = mergeLaunchPlayer(players, launchPlayer);
 
   const embed = buildProgressEmbed({ dateKey, players });
   if (descriptionExtra) {
@@ -353,6 +428,12 @@ export async function sendLoldleProgressFollowup(
   interaction,
   env,
   fetchImpl = fetch,
+  {
+    refreshDelaysMs = parseLaunchRefreshDelaysMs(
+      env.PROGRESS_LAUNCH_REFRESH_DELAYS_MS,
+    ),
+    sleepFn = sleep,
+  } = {},
 ) {
   const applicationId = interaction.application_id;
   const interactionToken = interaction.token;
@@ -364,13 +445,15 @@ export async function sendLoldleProgressFollowup(
     );
   }
 
+  const launchPlayer = getLaunchPlayer(interaction);
   const { embed, dateKey } = await loadProgressEmbed({
     env,
     channelId,
+    launchPlayer,
     fetchImpl,
   });
 
-  return upsertChannelProgressMessage({
+  const firstResult = await upsertChannelProgressMessage({
     channelId,
     applicationId,
     botToken: env.DISCORD_TOKEN,
@@ -379,6 +462,28 @@ export async function sendLoldleProgressFollowup(
     embed,
     fetchImpl,
   });
+
+  // /loldle races Activity startup: Progress API often has no row yet on the
+  // first paint. Re-fetch/edit a few times so the launcher appears without
+  // needing another slash command. Ongoing guesses still need Convex to hit
+  // POST /sync-progress.
+  if (
+    channelId &&
+    env.DISCORD_TOKEN &&
+    env.DISCORD_APPLICATION_ID &&
+    refreshDelaysMs.length
+  ) {
+    for (const delayMs of refreshDelaysMs) {
+      await sleepFn(delayMs);
+      try {
+        await syncChannelProgress({ channelId, dateKey }, env, fetchImpl);
+      } catch (error) {
+        console.error('Delayed progress refresh failed:', error);
+      }
+    }
+  }
+
+  return firstResult;
 }
 
 /**

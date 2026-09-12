@@ -17,6 +17,9 @@ import {
   getDailyDateKey,
   progressEmbedTitle,
   findProgressMessage,
+  getLaunchPlayer,
+  mergeLaunchPlayer,
+  sendLoldleProgressFollowup,
 } from '../src/progress.js';
 
 describe('Server', () => {
@@ -241,6 +244,7 @@ describe('Server', () => {
         PROGRESS_API_SECRET: 'test-secret',
         DISCORD_TOKEN: 'bot-token',
         DISCORD_APPLICATION_ID: '123456789',
+        PROGRESS_LAUNCH_REFRESH_DELAYS_MS: '[]',
       };
 
       const dateKey = getDailyDateKey();
@@ -351,6 +355,7 @@ describe('Server', () => {
         PROGRESS_API_SECRET: 'test-secret',
         DISCORD_TOKEN: 'bot-token',
         DISCORD_APPLICATION_ID: '123456789',
+        PROGRESS_LAUNCH_REFRESH_DELAYS_MS: '[]',
       };
 
       const progressUrl = `https://progress.example/channel-progress?channelId=channel-123&dateKey=${encodeURIComponent(dateKey)}`;
@@ -512,6 +517,138 @@ describe('Server', () => {
         applicationId: 'app',
       });
       expect(found.id).to.equal('2');
+    });
+
+    it('seeds the /loldle launcher when progress is still empty', () => {
+      const launchPlayer = getLaunchPlayer({
+        user: { id: 'u1', username: 'bming' },
+      });
+      const players = mergeLaunchPlayer([], launchPlayer);
+      expect(players).to.deep.equal([
+        {
+          userId: 'u1',
+          username: 'bming',
+          guessCount: 0,
+          solved: false,
+        },
+      ]);
+    });
+
+    it('re-syncs the board after launch delays without another /loldle', async () => {
+      const dateKey = getDailyDateKey();
+      const title = progressEmbedTitle(dateKey);
+      const progressUrl = `https://progress.example/channel-progress?channelId=channel-123&dateKey=${encodeURIComponent(dateKey)}`;
+      const messagesUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages?limit=50';
+      const editUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages/msg-1';
+      const createUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages';
+
+      let progressCalls = 0;
+      const fetchStub = sinon
+        .stub(globalThis, 'fetch')
+        .callsFake(async (url) => {
+          if (url === progressUrl) {
+            progressCalls += 1;
+            const players =
+              progressCalls === 1
+                ? []
+                : [
+                    {
+                      userId: 'u1',
+                      username: 'bming',
+                      guessCount: 2,
+                      solved: false,
+                    },
+                  ];
+            return {
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              json: async () => ({
+                channelId: 'channel-123',
+                dateKey,
+                players,
+              }),
+              text: async () => '',
+            };
+          }
+          if (url === messagesUrl) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              json: async () =>
+                progressCalls === 1
+                  ? []
+                  : [
+                      {
+                        id: 'msg-1',
+                        author: { id: 'app-1' },
+                        embeds: [{ title }],
+                      },
+                    ],
+              text: async () => '',
+            };
+          }
+          if (url === createUrl) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              json: async () => ({ id: 'msg-1' }),
+              text: async () => '',
+            };
+          }
+          if (url === editUrl) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              json: async () => ({ id: 'msg-1' }),
+              text: async () => '',
+            };
+          }
+          throw new Error(`Unexpected fetch URL: ${url}`);
+        });
+
+      const sleeps = [];
+      try {
+        await sendLoldleProgressFollowup(
+          {
+            application_id: 'app-1',
+            token: 'interaction-token',
+            channel_id: 'channel-123',
+            user: { id: 'u1', username: 'bming' },
+          },
+          {
+            PROGRESS_API_BASE_URL: 'https://progress.example',
+            PROGRESS_API_SECRET: 'test-secret',
+            DISCORD_TOKEN: 'bot-token',
+            DISCORD_APPLICATION_ID: 'app-1',
+          },
+          fetchStub,
+          {
+            refreshDelaysMs: [1, 1],
+            sleepFn: async (ms) => {
+              sleeps.push(ms);
+            },
+          },
+        );
+
+        expect(sleeps).to.deep.equal([1, 1]);
+        expect(progressCalls).to.equal(3);
+        const editCall = fetchStub
+          .getCalls()
+          .find((call) => call.args[0] === editUrl);
+        expect(editCall).to.exist;
+        const payload = JSON.parse(editCall.args[1].body);
+        expect(payload.embeds[0].description).to.include('bming');
+        expect(payload.embeds[0].description).to.include('2');
+      } finally {
+        fetchStub.restore();
+      }
     });
   });
 

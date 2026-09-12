@@ -57,7 +57,7 @@ router.post('/sync-progress', async (request, env) => {
     return new JsonResponse({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const channelId = payload?.channelId;
+  const channelId = payload?.channelId ?? payload?.channel_id;
   if (!channelId || typeof channelId !== 'string') {
     return new JsonResponse(
       { error: 'channelId is required' },
