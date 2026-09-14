@@ -13,8 +13,20 @@ export const DAILY_TIME_ZONE = 'America/New_York';
 /** custom_id for the Play button on the daily progress board. */
 export const LOLDLE_PLAY_CUSTOM_ID = 'loldle_play';
 
-/** Re-sync after /loldle so the first launcher shows up without a second slash. */
-export const DEFAULT_LAUNCH_REFRESH_DELAYS_MS = [2500, 7000, 15000, 25000];
+/**
+ * Absolute ms-from-start times to re-sync after /loldle / Play.
+ * (Not sequential sleeps — 25s here means ~25s after launch, not 2.5+7+15+25.)
+ */
+export const DEFAULT_LAUNCH_REFRESH_DELAYS_MS = [
+  1500, 3500, 7000, 12000, 20000, 30000,
+];
+
+/**
+ * Absolute ms-from-start follow-ups after POST /sync-progress.
+ * Catches finish writes that land just after Convex fires sync, and keeps the
+ * Discord edit work on the worker via waitUntil if the Activity closes quickly.
+ */
+export const DEFAULT_SYNC_REFRESH_DELAYS_MS = [500, 2000, 5000];
 
 /**
  * Action row with a Play button that launches the Loldle Activity
@@ -123,7 +135,7 @@ export function mergeLaunchPlayer(players = [], launchPlayer) {
   return [...players, launchPlayer];
 }
 
-export function parseLaunchRefreshDelaysMs(
+export function parseRefreshDelaysMs(
   envValue,
   fallback = DEFAULT_LAUNCH_REFRESH_DELAYS_MS,
 ) {
@@ -144,8 +156,53 @@ export function parseLaunchRefreshDelaysMs(
   }
 }
 
+/** @deprecated Prefer parseRefreshDelaysMs */
+export function parseLaunchRefreshDelaysMs(
+  envValue,
+  fallback = DEFAULT_LAUNCH_REFRESH_DELAYS_MS,
+) {
+  return parseRefreshDelaysMs(envValue, fallback);
+}
+
 export function sleep(ms, { setTimeoutFn = setTimeout } = {}) {
   return new Promise((resolve) => setTimeoutFn(resolve, ms));
+}
+
+/**
+ * Run progress board re-syncs at absolute delays from start (sorted ms).
+ * Tracks elapsed so fake/test sleep still advances the schedule correctly.
+ */
+export async function runDelayedProgressRefreshes({
+  channelId,
+  dateKey,
+  env,
+  fetchImpl = fetch,
+  refreshDelaysMs = [],
+  sleepFn = sleep,
+  syncFn = syncChannelProgress,
+}) {
+  if (!channelId || !refreshDelaysMs.length) {
+    return;
+  }
+
+  const absoluteDelays = [...refreshDelaysMs]
+    .map(Number)
+    .filter((n) => Number.isFinite(n) && n >= 0)
+    .sort((a, b) => a - b);
+
+  let elapsedMs = 0;
+  for (const targetMs of absoluteDelays) {
+    const waitMs = Math.max(0, targetMs - elapsedMs);
+    if (waitMs > 0) {
+      await sleepFn(waitMs);
+      elapsedMs += waitMs;
+    }
+    try {
+      await syncFn({ channelId, dateKey }, env, fetchImpl);
+    } catch (error) {
+      console.error('Delayed progress refresh failed:', error);
+    }
+  }
 }
 
 export async function fetchChannelProgress({
@@ -346,12 +403,31 @@ export async function upsertChannelProgressMessage({
   interactionToken,
   dateKey,
   embed,
+  messageId = null,
   fetchImpl = fetch,
 }) {
   const body = {
     embeds: [embed],
     components: buildProgressMessageComponents(),
   };
+
+  if (botToken && channelId && messageId) {
+    try {
+      const updated = await editChannelMessage({
+        channelId,
+        messageId,
+        botToken,
+        body,
+        fetchImpl,
+      });
+      return { action: 'edited', message: updated };
+    } catch (error) {
+      console.error(
+        'Direct edit by messageId failed; falling back to channel lookup:',
+        error,
+      );
+    }
+  }
 
   if (botToken && channelId && applicationId) {
     try {
@@ -417,12 +493,15 @@ export async function loadProgressEmbed({
   channelId,
   dateKey = getDailyDateKey(),
   launchPlayer = null,
+  players: playersOverride = null,
   fetchImpl = fetch,
 }) {
   let players = [];
   let descriptionExtra = '';
 
-  if (!channelId) {
+  if (Array.isArray(playersOverride)) {
+    players = playersOverride.map(normalizePlayer);
+  } else if (!channelId) {
     descriptionExtra =
       '\n_No channel id on this interaction — progress skipped._';
   } else if (!env.PROGRESS_API_BASE_URL || !env.PROGRESS_API_SECRET) {
@@ -457,7 +536,7 @@ export async function sendLoldleProgressFollowup(
   env,
   fetchImpl = fetch,
   {
-    refreshDelaysMs = parseLaunchRefreshDelaysMs(
+    refreshDelaysMs = parseRefreshDelaysMs(
       env.PROGRESS_LAUNCH_REFRESH_DELAYS_MS,
     ),
     sleepFn = sleep,
@@ -492,23 +571,23 @@ export async function sendLoldleProgressFollowup(
   });
 
   // /loldle races Activity startup: Progress API often has no row yet on the
-  // first paint. Re-fetch/edit a few times so the launcher appears without
-  // needing another slash command. Ongoing guesses still need Convex to hit
-  // POST /sync-progress.
+  // first paint. Re-fetch/edit a few times (absolute schedule from launch) so
+  // the launcher appears without needing another slash. Mid-game / finish
+  // updates still need Convex to hit POST /sync-progress.
   if (
     channelId &&
     env.DISCORD_TOKEN &&
     env.DISCORD_APPLICATION_ID &&
     refreshDelaysMs.length
   ) {
-    for (const delayMs of refreshDelaysMs) {
-      await sleepFn(delayMs);
-      try {
-        await syncChannelProgress({ channelId, dateKey }, env, fetchImpl);
-      } catch (error) {
-        console.error('Delayed progress refresh failed:', error);
-      }
-    }
+    await runDelayedProgressRefreshes({
+      channelId,
+      dateKey,
+      env,
+      fetchImpl,
+      refreshDelaysMs,
+      sleepFn,
+    });
   }
 
   return firstResult;
@@ -516,10 +595,14 @@ export async function sendLoldleProgressFollowup(
 
 /**
  * Refresh today's progress board for a channel (e.g. Convex calls this
- * after a guess so the board edits live, Wordle-style).
+ * after a guess / finish so the board edits live, Wordle-style).
+ *
+ * Optional `players` paints the board from the POST body (skips Progress GET),
+ * useful so a finish always lands even if the Activity closes immediately.
+ * Optional `messageId` skips the channel history lookup for a faster edit.
  */
 export async function syncChannelProgress(
-  { channelId, dateKey },
+  { channelId, dateKey, messageId = null, players = null },
   env,
   fetchImpl = fetch,
 ) {
@@ -540,6 +623,7 @@ export async function syncChannelProgress(
     env,
     channelId,
     dateKey: resolvedDateKey,
+    players,
     fetchImpl,
   });
 
@@ -548,7 +632,45 @@ export async function syncChannelProgress(
     applicationId,
     botToken,
     dateKey: resolvedDateKey,
+    messageId,
     embed,
     fetchImpl,
   });
+}
+
+/**
+ * Sync now, then re-sync on an absolute follow-up schedule.
+ * Used by POST /sync-progress so finishes still update if the caller
+ * disconnects quickly (pair with context.waitUntil on the worker).
+ */
+export async function syncChannelProgressWithFollowups(
+  { channelId, dateKey, messageId = null, players = null },
+  env,
+  fetchImpl = fetch,
+  {
+    refreshDelaysMs = parseRefreshDelaysMs(
+      env.PROGRESS_SYNC_REFRESH_DELAYS_MS,
+      DEFAULT_SYNC_REFRESH_DELAYS_MS,
+    ),
+    sleepFn = sleep,
+  } = {},
+) {
+  const result = await syncChannelProgress(
+    { channelId, dateKey, messageId, players },
+    env,
+    fetchImpl,
+  );
+
+  // Follow-ups re-fetch Progress API (ignore one-shot players snapshot) so a
+  // finish that commits slightly after the first sync still flips to ✅.
+  await runDelayedProgressRefreshes({
+    channelId,
+    dateKey: dateKey || getDailyDateKey(),
+    env,
+    fetchImpl,
+    refreshDelaysMs,
+    sleepFn,
+  });
+
+  return result;
 }
