@@ -20,7 +20,10 @@ import {
   getLaunchPlayer,
   mergeLaunchPlayer,
   sendLoldleProgressFollowup,
+  LOLDLE_PLAY_CUSTOM_ID,
+  buildProgressMessageComponents,
 } from '../src/progress.js';
+import { ButtonStyleTypes, MessageComponentTypes } from 'discord-interactions';
 
 describe('Server', () => {
   describe('GET /', () => {
@@ -330,6 +333,113 @@ describe('Server', () => {
       expect(payload.embeds[0].title).to.equal(`Loldle — ${dateKey}`);
       expect(payload.embeds[0].description).to.include('Alice');
       expect(payload.embeds[0].description).to.include('Bob');
+      expect(payload.components).to.deep.equal(
+        buildProgressMessageComponents(),
+      );
+    });
+
+    it('should launch Loldle when the Play button is clicked', async () => {
+      const interaction = {
+        type: InteractionType.MESSAGE_COMPONENT,
+        application_id: '123456789',
+        token: 'interaction-token',
+        channel_id: 'channel-123',
+        data: {
+          custom_id: LOLDLE_PLAY_CUSTOM_ID,
+          component_type: MessageComponentTypes.BUTTON,
+        },
+        member: {
+          user: { id: 'u-play', username: 'PlayerOne' },
+        },
+      };
+
+      const request = {
+        method: 'POST',
+        url: new URL('/', 'http://discordo.example'),
+      };
+
+      const env = {
+        PROGRESS_API_BASE_URL: 'https://progress.example',
+        PROGRESS_API_SECRET: 'test-secret',
+        DISCORD_TOKEN: 'bot-token',
+        DISCORD_APPLICATION_ID: '123456789',
+        PROGRESS_LAUNCH_REFRESH_DELAYS_MS: '[]',
+      };
+
+      const dateKey = getDailyDateKey();
+      const progressUrl = `https://progress.example/channel-progress?channelId=channel-123&dateKey=${encodeURIComponent(dateKey)}`;
+      const messagesUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages?limit=50';
+      const createUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages';
+
+      verifyDiscordRequestStub.resolves({
+        isValid: true,
+        interaction,
+      });
+
+      const fetchStub = sandbox.stub(globalThis, 'fetch');
+      fetchStub.callsFake(async (url) => {
+        if (url === progressUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({
+              channelId: 'channel-123',
+              dateKey,
+              players: [],
+            }),
+            text: async () => '',
+          };
+        }
+        if (url === messagesUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => [],
+            text: async () => '',
+          };
+        }
+        if (url === createUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({ id: 'new-msg' }),
+            text: async () => JSON.stringify({ id: 'new-msg' }),
+          };
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      });
+
+      const pending = [];
+      const context = {
+        waitUntil(promise) {
+          pending.push(promise);
+        },
+      };
+
+      const response = await server.fetch(request, env, context);
+      const body = await response.json();
+      expect(body.type).to.equal(InteractionResponseType.LAUNCH_ACTIVITY);
+
+      await Promise.all(pending);
+
+      const createCall = fetchStub
+        .getCalls()
+        .find((c) => c.args[0] === createUrl);
+      expect(createCall).to.exist;
+      const payload = JSON.parse(createCall.args[1].body);
+      expect(payload.embeds[0].description).to.include('PlayerOne');
+      expect(payload.components[0].components[0].custom_id).to.equal(
+        LOLDLE_PLAY_CUSTOM_ID,
+      );
+      expect(payload.components[0].components[0].label).to.equal('Play');
+      expect(payload.components[0].components[0].style).to.equal(
+        ButtonStyleTypes.PRIMARY,
+      );
     });
 
     it("should launch Loldle and edit today's existing progress message", async () => {
@@ -437,6 +547,9 @@ describe('Server', () => {
       const payload = JSON.parse(editCall.args[1].body);
       expect(payload.embeds[0].description).to.include('bming');
       expect(payload.embeds[0].description).to.include('15');
+      expect(payload.components).to.deep.equal(
+        buildProgressMessageComponents(),
+      );
     });
 
     it('should handle an invite command interaction', async () => {
@@ -498,6 +611,18 @@ describe('Server', () => {
   });
 
   describe('progress helpers', () => {
+    it('buildProgressMessageComponents includes a Play launch button', () => {
+      const components = buildProgressMessageComponents();
+      expect(components).to.have.length(1);
+      expect(components[0].type).to.equal(MessageComponentTypes.ACTION_ROW);
+      expect(components[0].components[0]).to.deep.include({
+        type: MessageComponentTypes.BUTTON,
+        style: ButtonStyleTypes.PRIMARY,
+        label: 'Play',
+        custom_id: LOLDLE_PLAY_CUSTOM_ID,
+      });
+    });
+
     it('findProgressMessage matches bot embed by title', () => {
       const dateKey = '2026-09-11';
       const messages = [
