@@ -253,7 +253,7 @@ describe('Server', () => {
         .filter((c) => c.args[0] === editUrl);
       expect(editCalls.length).to.be.at.least(2);
       const lastPayload = JSON.parse(editCalls.at(-1).args[1].body);
-      expect(lastPayload.embeds[0].description).to.include('👑 **bming**');
+      expect(lastPayload.embeds[0].description).to.include('👑 **<@1>**');
       expect(lastPayload.embeds[0].description).to.include('15/∞');
     });
 
@@ -310,7 +310,7 @@ describe('Server', () => {
       expect(body.action).to.equal('edited');
       expect(fetchStub.calledOnce).to.equal(true);
       const payload = JSON.parse(fetchStub.firstCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('👑 **bming**');
+      expect(payload.embeds[0].description).to.include('👑 **<@1>**');
       expect(payload.embeds[0].description).to.include('8/∞');
     });
   });
