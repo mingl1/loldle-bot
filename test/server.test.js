@@ -17,6 +17,7 @@ import {
   getDailyDateKey,
   progressEmbedTitle,
   findProgressMessage,
+  formatProgressLines,
   getLaunchPlayer,
   mergeLaunchPlayer,
   sendLoldleProgressFollowup,
@@ -328,8 +329,9 @@ describe('Server', () => {
       expect(createCall.args[1].method).to.equal('POST');
       const payload = JSON.parse(createCall.args[1].body);
       expect(payload.embeds[0].title).to.equal(`Loldle — ${dateKey}`);
-      expect(payload.embeds[0].description).to.include('Alice');
+      expect(payload.embeds[0].description).to.include('👑 **Alice**');
       expect(payload.embeds[0].description).to.include('Bob');
+      expect(payload.embeds[0].description).to.not.include('👑 **Bob**');
     });
 
     it("should launch Loldle and edit today's existing progress message", async () => {
@@ -498,6 +500,46 @@ describe('Server', () => {
   });
 
   describe('progress helpers', () => {
+    it('crowns the solved player with the fewest guesses', () => {
+      const lines = formatProgressLines([
+        { username: 'Alice', guessCount: 5, solved: true },
+        { username: 'Bob', guessCount: 3, solved: true },
+        { username: 'Carol', guessCount: 2, solved: false },
+      ]);
+
+      expect(lines).to.deep.equal([
+        '✅ **Alice** — 5/∞',
+        '👑 **Bob** — 3/∞',
+        '🔄 **Carol** — 2 guesses',
+      ]);
+    });
+
+    it('crowns every tied fewest-guess solver', () => {
+      const lines = formatProgressLines([
+        { username: 'Alice', guessCount: 4, solved: true },
+        { username: 'Bob', guessCount: 4, solved: true },
+        { username: 'Carol', guessCount: 7, solved: true },
+      ]);
+
+      expect(lines).to.deep.equal([
+        '👑 **Alice** — 4/∞',
+        '👑 **Bob** — 4/∞',
+        '✅ **Carol** — 7/∞',
+      ]);
+    });
+
+    it('does not crown unsolved players even with low guess counts', () => {
+      const lines = formatProgressLines([
+        { username: 'Alice', guessCount: 1, solved: false },
+        { username: 'Bob', guessCount: 8, solved: true },
+      ]);
+
+      expect(lines).to.deep.equal([
+        '🔄 **Alice** — 1 guess',
+        '👑 **Bob** — 8/∞',
+      ]);
+    });
+
     it('findProgressMessage matches bot embed by title', () => {
       const dateKey = '2026-09-11';
       const messages = [
