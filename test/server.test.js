@@ -134,6 +134,7 @@ describe('Server', () => {
         PROGRESS_API_BASE_URL: 'https://progress.example',
         DISCORD_APPLICATION_ID: 'app-1',
         DISCORD_TOKEN: 'bot-token',
+        PROGRESS_SYNC_REFRESH_DELAYS_MS: '[]',
       };
 
       const response = await server.fetch(request, env);
@@ -142,6 +143,7 @@ describe('Server', () => {
       expect(response.status).to.equal(200);
       expect(body).to.deep.equal({
         ok: true,
+        accepted: false,
         action: 'edited',
         messageId: 'msg-1',
       });
@@ -150,6 +152,163 @@ describe('Server', () => {
       expect(editCall.args[1].method).to.equal('PATCH');
       const payload = JSON.parse(editCall.args[1].body);
       expect(payload.embeds[0].description).to.include('bming');
+    });
+
+    it('should accept sync via waitUntil so a quick exit still finishes', async () => {
+      const dateKey = getDailyDateKey();
+      const title = progressEmbedTitle(dateKey);
+      const progressUrl = `https://progress.example/channel-progress?channelId=channel-123&dateKey=${encodeURIComponent(dateKey)}`;
+      const messagesUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages?limit=50';
+      const editUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages/msg-1';
+
+      let progressCalls = 0;
+      const fetchStub = sandbox.stub(globalThis, 'fetch');
+      fetchStub.callsFake(async (url) => {
+        if (url === progressUrl) {
+          progressCalls += 1;
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({
+              channelId: 'channel-123',
+              dateKey,
+              players: [
+                {
+                  userId: '1',
+                  username: 'bming',
+                  guessCount: progressCalls === 1 ? 14 : 15,
+                  solved: progressCalls > 1,
+                },
+              ],
+            }),
+            text: async () => '',
+          };
+        }
+        if (url === messagesUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => [
+              {
+                id: 'msg-1',
+                author: { id: 'app-1' },
+                embeds: [{ title }],
+              },
+            ],
+            text: async () => '',
+          };
+        }
+        if (url === editUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({ id: 'msg-1' }),
+            text: async () => '',
+          };
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      });
+
+      const pending = [];
+      const context = {
+        waitUntil(promise) {
+          pending.push(promise);
+        },
+      };
+
+      const request = {
+        method: 'POST',
+        url: new URL('/sync-progress', 'http://discordo.example'),
+        headers: new Headers({ Authorization: 'Bearer test-secret' }),
+        json: async () => ({ channelId: 'channel-123' }),
+      };
+      const env = {
+        PROGRESS_API_SECRET: 'test-secret',
+        PROGRESS_API_BASE_URL: 'https://progress.example',
+        DISCORD_APPLICATION_ID: 'app-1',
+        DISCORD_TOKEN: 'bot-token',
+        // Absolute follow-ups: finish should appear on a later refresh.
+        PROGRESS_SYNC_REFRESH_DELAYS_MS: '[1, 2]',
+      };
+
+      const response = await server.fetch(request, env, context);
+      const body = await response.json();
+
+      expect(response.status).to.equal(202);
+      expect(body).to.deep.equal({ ok: true, accepted: true });
+
+      await Promise.all(pending);
+
+      expect(progressCalls).to.be.at.least(2);
+      const editCalls = fetchStub
+        .getCalls()
+        .filter((c) => c.args[0] === editUrl);
+      expect(editCalls.length).to.be.at.least(2);
+      const lastPayload = JSON.parse(editCalls.at(-1).args[1].body);
+      expect(lastPayload.embeds[0].description).to.include('✅');
+      expect(lastPayload.embeds[0].description).to.include('bming');
+    });
+
+    it('should paint a finish from an optional players snapshot without Progress GET', async () => {
+      const dateKey = getDailyDateKey();
+      const editUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages/msg-9';
+
+      const fetchStub = sandbox.stub(globalThis, 'fetch');
+      fetchStub.callsFake(async (url) => {
+        if (url === editUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({ id: 'msg-9' }),
+            text: async () => '',
+          };
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      });
+
+      const request = {
+        method: 'POST',
+        url: new URL('/sync-progress', 'http://discordo.example'),
+        headers: new Headers({ Authorization: 'Bearer test-secret' }),
+        json: async () => ({
+          channelId: 'channel-123',
+          messageId: 'msg-9',
+          dateKey,
+          players: [
+            {
+              userId: '1',
+              username: 'bming',
+              guessCount: 8,
+              solved: true,
+            },
+          ],
+        }),
+      };
+      const env = {
+        PROGRESS_API_SECRET: 'test-secret',
+        PROGRESS_API_BASE_URL: 'https://progress.example',
+        DISCORD_APPLICATION_ID: 'app-1',
+        DISCORD_TOKEN: 'bot-token',
+        PROGRESS_SYNC_REFRESH_DELAYS_MS: '[]',
+      };
+
+      const response = await server.fetch(request, env);
+      const body = await response.json();
+
+      expect(response.status).to.equal(200);
+      expect(body.ok).to.equal(true);
+      expect(body.action).to.equal('edited');
+      expect(fetchStub.calledOnce).to.equal(true);
+      const payload = JSON.parse(fetchStub.firstCall.args[1].body);
+      expect(payload.embeds[0].description).to.include('✅');
+      expect(payload.embeds[0].description).to.include('8/∞');
     });
   });
 
@@ -659,7 +818,7 @@ describe('Server', () => {
       ]);
     });
 
-    it('re-syncs the board after launch delays without another /loldle', async () => {
+    it('re-syncs the board on an absolute schedule after launch', async () => {
       const dateKey = getDailyDateKey();
       const title = progressEmbedTitle(dateKey);
       const progressUrl = `https://progress.example/channel-progress?channelId=channel-123&dateKey=${encodeURIComponent(dateKey)}`;
@@ -755,14 +914,15 @@ describe('Server', () => {
           },
           fetchStub,
           {
-            refreshDelaysMs: [1, 1],
+            // Absolute times from launch: 1ms then 3ms → sleeps 1 then 2.
+            refreshDelaysMs: [1, 3],
             sleepFn: async (ms) => {
               sleeps.push(ms);
             },
           },
         );
 
-        expect(sleeps).to.deep.equal([1, 1]);
+        expect(sleeps).to.deep.equal([1, 2]);
         expect(progressCalls).to.equal(3);
         const editCall = fetchStub
           .getCalls()

@@ -14,7 +14,9 @@ import { InteractionResponseFlags } from 'discord-interactions';
 import {
   LOLDLE_PLAY_CUSTOM_ID,
   sendLoldleProgressFollowup,
-  syncChannelProgress,
+  syncChannelProgressWithFollowups,
+  parseRefreshDelaysMs,
+  DEFAULT_SYNC_REFRESH_DELAYS_MS,
 } from './progress.js';
 
 class JsonResponse extends Response {
@@ -39,13 +41,21 @@ router.get('/', (request, env) => {
 });
 
 /**
- * Progress API (Convex) can POST here after guesses so the channel board
- * is edited in place instead of stacking new messages.
+ * Progress API (Convex) can POST here after guesses / finishes so the channel
+ * board is edited in place instead of stacking new messages.
  *
  * Authorization: Bearer ${PROGRESS_API_SECRET}
- * Body JSON: { "channelId": "...", "dateKey": "YYYY-MM-DD" }  // dateKey optional
+ * Body JSON: {
+ *   "channelId": "...",
+ *   "dateKey": "YYYY-MM-DD",   // optional
+ *   "messageId": "...",        // optional — skip channel history lookup
+ *   "players": [ ... ]         // optional — paint board from this snapshot
+ * }
+ *
+ * Returns quickly (202) when waitUntil is available so a fast Activity exit
+ * does not cancel the Discord edit; follow-up re-syncs catch late finishes.
  */
-router.post('/sync-progress', async (request, env) => {
+router.post('/sync-progress', async (request, env, context) => {
   const auth = request.headers.get('Authorization') || '';
   const expected = env.PROGRESS_API_SECRET
     ? `Bearer ${env.PROGRESS_API_SECRET}`
@@ -69,16 +79,46 @@ router.post('/sync-progress', async (request, env) => {
     );
   }
 
+  const messageId =
+    typeof payload?.messageId === 'string'
+      ? payload.messageId
+      : typeof payload?.message_id === 'string'
+        ? payload.message_id
+        : null;
+  const players = Array.isArray(payload?.players) ? payload.players : null;
+  const dateKey = payload?.dateKey ?? payload?.date_key ?? null;
+  const refreshDelaysMs = parseRefreshDelaysMs(
+    env.PROGRESS_SYNC_REFRESH_DELAYS_MS,
+    DEFAULT_SYNC_REFRESH_DELAYS_MS,
+  );
+
+  const syncArgs = { channelId, dateKey, messageId, players };
+
+  const work = syncChannelProgressWithFollowups(syncArgs, env, fetch, {
+    refreshDelaysMs,
+  }).catch((error) => {
+    console.error('Error syncing channel progress:', error);
+    return null;
+  });
+
+  // Prefer waitUntil so Discord edits finish even if the Activity / Convex
+  // caller disconnects right after solve.
+  if (context && typeof context.waitUntil === 'function') {
+    context.waitUntil(work);
+    return new JsonResponse({ ok: true, accepted: true }, { status: 202 });
+  }
+
   try {
-    const result = await syncChannelProgress(
-      {
-        channelId,
-        dateKey: payload.dateKey,
-      },
-      env,
-    );
+    const result = await work;
+    if (!result) {
+      return new JsonResponse(
+        { error: 'Failed to sync progress' },
+        { status: 500 },
+      );
+    }
     return new JsonResponse({
       ok: true,
+      accepted: false,
       action: result.action,
       messageId: result.message?.id ?? null,
     });
