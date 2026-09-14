@@ -51,6 +51,30 @@ export function progressEmbedTitle(dateKey) {
   return `Loldle — ${dateKey}`;
 }
 
+/**
+ * Name other Discord users see in a guild/channel:
+ * server nick → display name (global_name) → username.
+ */
+export function getDiscordVisibleName({ member, user } = {}) {
+  const resolvedUser = user ?? member?.user;
+  const nick = typeof member?.nick === 'string' ? member.nick.trim() : '';
+  if (nick) {
+    return nick;
+  }
+  const globalName =
+    typeof resolvedUser?.global_name === 'string'
+      ? resolvedUser.global_name.trim()
+      : '';
+  if (globalName) {
+    return globalName;
+  }
+  const username =
+    typeof resolvedUser?.username === 'string'
+      ? resolvedUser.username.trim()
+      : '';
+  return username || 'Unknown';
+}
+
 export function normalizePlayer(player = {}) {
   return {
     userId: player.userId ?? player.user_id ?? player.id,
@@ -60,6 +84,18 @@ export function normalizePlayer(player = {}) {
   };
 }
 
+/**
+ * Prefer a user mention so Discord clients render the server nick / display
+ * name others see in the channel. Mentions inside embeds do not ping.
+ */
+export function formatPlayerDisplayName(player = {}) {
+  const normalized = normalizePlayer(player);
+  if (normalized.userId) {
+    return `<@${normalized.userId}>`;
+  }
+  return normalized.username || 'Unknown';
+}
+
 export function formatProgressLines(players = []) {
   if (!players.length) {
     return ["No one in this channel has started today's Loldle yet."];
@@ -67,7 +103,7 @@ export function formatProgressLines(players = []) {
 
   return players.map((player) => {
     const normalized = normalizePlayer(player);
-    const name = normalized.username || 'Unknown';
+    const name = formatPlayerDisplayName(normalized);
     if (normalized.solved) {
       const guesses = normalized.guessCount ?? '?';
       return `✅ **${name}** — ${guesses}/∞`;
@@ -90,13 +126,14 @@ export function buildProgressEmbed({ dateKey, players }) {
 }
 
 export function getLaunchPlayer(interaction) {
-  const user = interaction?.member?.user ?? interaction?.user;
+  const member = interaction?.member;
+  const user = member?.user ?? interaction?.user;
   if (!user?.id) {
     return null;
   }
   return {
     userId: user.id,
-    username: user.global_name || user.username || 'Unknown',
+    username: getDiscordVisibleName({ member, user }),
     guessCount: 0,
     solved: false,
   };
@@ -351,6 +388,8 @@ export async function upsertChannelProgressMessage({
   const body = {
     embeds: [embed],
     components: buildProgressMessageComponents(),
+    // Mentions in embeds don't ping, but keep parse empty as a safeguard.
+    allowed_mentions: { parse: [] },
   };
 
   if (botToken && channelId && applicationId) {

@@ -22,6 +22,9 @@ import {
   sendLoldleProgressFollowup,
   LOLDLE_PLAY_CUSTOM_ID,
   buildProgressMessageComponents,
+  getDiscordVisibleName,
+  formatPlayerDisplayName,
+  formatProgressLines,
 } from '../src/progress.js';
 import { ButtonStyleTypes, MessageComponentTypes } from 'discord-interactions';
 
@@ -149,7 +152,7 @@ describe('Server', () => {
       const editCall = fetchStub.getCalls().find((c) => c.args[0] === editUrl);
       expect(editCall.args[1].method).to.equal('PATCH');
       const payload = JSON.parse(editCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('bming');
+      expect(payload.embeds[0].description).to.include('<@1>');
     });
   });
 
@@ -331,8 +334,8 @@ describe('Server', () => {
       expect(createCall.args[1].method).to.equal('POST');
       const payload = JSON.parse(createCall.args[1].body);
       expect(payload.embeds[0].title).to.equal(`Loldle — ${dateKey}`);
-      expect(payload.embeds[0].description).to.include('Alice');
-      expect(payload.embeds[0].description).to.include('Bob');
+      expect(payload.embeds[0].description).to.include('<@1>');
+      expect(payload.embeds[0].description).to.include('<@2>');
       expect(payload.components).to.deep.equal(
         buildProgressMessageComponents(),
       );
@@ -432,7 +435,7 @@ describe('Server', () => {
         .find((c) => c.args[0] === createUrl);
       expect(createCall).to.exist;
       const payload = JSON.parse(createCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('PlayerOne');
+      expect(payload.embeds[0].description).to.include('<@u-play>');
       expect(payload.components[0].components[0].custom_id).to.equal(
         LOLDLE_PLAY_CUSTOM_ID,
       );
@@ -545,7 +548,7 @@ describe('Server', () => {
       expect(editCall).to.exist;
       expect(editCall.args[1].method).to.equal('PATCH');
       const payload = JSON.parse(editCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('bming');
+      expect(payload.embeds[0].description).to.include('<@2>');
       expect(payload.embeds[0].description).to.include('15');
       expect(payload.components).to.deep.equal(
         buildProgressMessageComponents(),
@@ -659,6 +662,66 @@ describe('Server', () => {
       ]);
     });
 
+    it('prefers server nick then display name for launch players', () => {
+      expect(
+        getLaunchPlayer({
+          member: {
+            nick: 'Channel Nick',
+            user: {
+              id: 'u1',
+              username: 'actual_handle',
+              global_name: 'Display Name',
+            },
+          },
+        }),
+      ).to.deep.include({
+        userId: 'u1',
+        username: 'Channel Nick',
+      });
+
+      expect(
+        getLaunchPlayer({
+          member: {
+            user: {
+              id: 'u2',
+              username: 'actual_handle',
+              global_name: 'Display Name',
+            },
+          },
+        }),
+      ).to.deep.include({
+        userId: 'u2',
+        username: 'Display Name',
+      });
+    });
+
+    it('formats board names as mentions so Discord shows server-visible names', () => {
+      expect(
+        getDiscordVisibleName({
+          member: { nick: 'Server Nick' },
+          user: { username: 'handle', global_name: 'Display' },
+        }),
+      ).to.equal('Server Nick');
+
+      expect(
+        formatPlayerDisplayName({
+          userId: '99',
+          username: 'actual_handle',
+        }),
+      ).to.equal('<@99>');
+
+      expect(
+        formatProgressLines([
+          {
+            userId: '99',
+            username: 'actual_handle',
+            guessCount: 1,
+            solved: false,
+          },
+        ]),
+      ).to.deep.equal(['🔄 **<@99>** — 1 guess']);
+    });
+
     it('re-syncs the board after launch delays without another /loldle', async () => {
       const dateKey = getDailyDateKey();
       const title = progressEmbedTitle(dateKey);
@@ -769,7 +832,7 @@ describe('Server', () => {
           .find((call) => call.args[0] === editUrl);
         expect(editCall).to.exist;
         const payload = JSON.parse(editCall.args[1].body);
-        expect(payload.embeds[0].description).to.include('bming');
+        expect(payload.embeds[0].description).to.include('<@u1>');
         expect(payload.embeds[0].description).to.include('2');
       } finally {
         fetchStub.restore();
