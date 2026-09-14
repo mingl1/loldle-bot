@@ -11,7 +11,13 @@ import {
 import { AWW_COMMAND, INVITE_COMMAND, LOLDLE_COMMAND } from './commands.js';
 import { getCuteUrl } from './reddit.js';
 import { InteractionResponseFlags } from 'discord-interactions';
-import { sendLoldleProgressFollowup, syncChannelProgress } from './progress.js';
+import {
+  LOLDLE_PLAY_CUSTOM_ID,
+  sendLoldleProgressFollowup,
+  syncChannelProgressWithFollowups,
+  parseRefreshDelaysMs,
+  DEFAULT_SYNC_REFRESH_DELAYS_MS,
+} from './progress.js';
 
 class JsonResponse extends Response {
   constructor(body, init) {
@@ -35,13 +41,21 @@ router.get('/', (request, env) => {
 });
 
 /**
- * Progress API (Convex) can POST here after guesses so the channel board
- * is edited in place instead of stacking new messages.
+ * Progress API (Convex) can POST here after guesses / finishes so the channel
+ * board is edited in place instead of stacking new messages.
  *
  * Authorization: Bearer ${PROGRESS_API_SECRET}
- * Body JSON: { "channelId": "...", "dateKey": "YYYY-MM-DD" }  // dateKey optional
+ * Body JSON: {
+ *   "channelId": "...",
+ *   "dateKey": "YYYY-MM-DD",   // optional
+ *   "messageId": "...",        // optional — skip channel history lookup
+ *   "players": [ ... ]         // optional — paint board from this snapshot
+ * }
+ *
+ * Returns quickly (202) when waitUntil is available so a fast Activity exit
+ * does not cancel the Discord edit; follow-up re-syncs catch late finishes.
  */
-router.post('/sync-progress', async (request, env) => {
+router.post('/sync-progress', async (request, env, context) => {
   const auth = request.headers.get('Authorization') || '';
   const expected = env.PROGRESS_API_SECRET
     ? `Bearer ${env.PROGRESS_API_SECRET}`
@@ -65,16 +79,46 @@ router.post('/sync-progress', async (request, env) => {
     );
   }
 
+  const messageId =
+    typeof payload?.messageId === 'string'
+      ? payload.messageId
+      : typeof payload?.message_id === 'string'
+        ? payload.message_id
+        : null;
+  const players = Array.isArray(payload?.players) ? payload.players : null;
+  const dateKey = payload?.dateKey ?? payload?.date_key ?? null;
+  const refreshDelaysMs = parseRefreshDelaysMs(
+    env.PROGRESS_SYNC_REFRESH_DELAYS_MS,
+    DEFAULT_SYNC_REFRESH_DELAYS_MS,
+  );
+
+  const syncArgs = { channelId, dateKey, messageId, players };
+
+  const work = syncChannelProgressWithFollowups(syncArgs, env, fetch, {
+    refreshDelaysMs,
+  }).catch((error) => {
+    console.error('Error syncing channel progress:', error);
+    return null;
+  });
+
+  // Prefer waitUntil so Discord edits finish even if the Activity / Convex
+  // caller disconnects right after solve.
+  if (context && typeof context.waitUntil === 'function') {
+    context.waitUntil(work);
+    return new JsonResponse({ ok: true, accepted: true }, { status: 202 });
+  }
+
   try {
-    const result = await syncChannelProgress(
-      {
-        channelId,
-        dateKey: payload.dateKey,
-      },
-      env,
-    );
+    const result = await work;
+    if (!result) {
+      return new JsonResponse(
+        { error: 'Failed to sync progress' },
+        { status: 500 },
+      );
+    }
     return new JsonResponse({
       ok: true,
+      accepted: false,
       action: result.action,
       messageId: result.message?.id ?? null,
     });
@@ -138,29 +182,41 @@ router.post('/', async (request, env, context) => {
         // the interaction/channel message instead of spamming new ones.
         // Entry Point stays handler:2 (Discord-native Launch) so App Launcher
         // never depends on this worker; only CHAT_INPUT /loldle hits this branch.
-        const followupPromise = sendLoldleProgressFollowup(
-          interaction,
-          env,
-        ).catch((error) => {
-          console.error('Error upserting Loldle progress message:', error);
-        });
-
-        if (context && typeof context.waitUntil === 'function') {
-          context.waitUntil(followupPromise);
-        }
-
-        return new JsonResponse({
-          type: InteractionResponseType.LAUNCH_ACTIVITY,
-        });
+        return launchLoldleActivity(interaction, env, context);
       }
       default:
         return new JsonResponse({ error: 'Unknown Type' }, { status: 400 });
     }
   }
 
+  if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
+    const customId = interaction.data?.custom_id;
+    if (customId === LOLDLE_PLAY_CUSTOM_ID) {
+      // Play button on the daily progress board — same launch path as /loldle.
+      return launchLoldleActivity(interaction, env, context);
+    }
+    return new JsonResponse({ error: 'Unknown component' }, { status: 400 });
+  }
+
   console.error('Unknown Type');
   return new JsonResponse({ error: 'Unknown Type' }, { status: 400 });
 });
+
+function launchLoldleActivity(interaction, env, context) {
+  const followupPromise = sendLoldleProgressFollowup(interaction, env).catch(
+    (error) => {
+      console.error('Error upserting Loldle progress message:', error);
+    },
+  );
+
+  if (context && typeof context.waitUntil === 'function') {
+    context.waitUntil(followupPromise);
+  }
+
+  return new JsonResponse({
+    type: InteractionResponseType.LAUNCH_ACTIVITY,
+  });
+}
 router.all('*', () => new Response('Not Found.', { status: 404 }));
 
 async function verifyDiscordRequest(request, env) {
