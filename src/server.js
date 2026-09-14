@@ -11,7 +11,11 @@ import {
 import { AWW_COMMAND, INVITE_COMMAND, LOLDLE_COMMAND } from './commands.js';
 import { getCuteUrl } from './reddit.js';
 import { InteractionResponseFlags } from 'discord-interactions';
-import { sendLoldleProgressFollowup, syncChannelProgress } from './progress.js';
+import {
+  LOLDLE_PLAY_CUSTOM_ID,
+  sendLoldleProgressFollowup,
+  syncChannelProgress,
+} from './progress.js';
 
 class JsonResponse extends Response {
   constructor(body, init) {
@@ -138,29 +142,41 @@ router.post('/', async (request, env, context) => {
         // the interaction/channel message instead of spamming new ones.
         // Entry Point stays handler:2 (Discord-native Launch) so App Launcher
         // never depends on this worker; only CHAT_INPUT /loldle hits this branch.
-        const followupPromise = sendLoldleProgressFollowup(
-          interaction,
-          env,
-        ).catch((error) => {
-          console.error('Error upserting Loldle progress message:', error);
-        });
-
-        if (context && typeof context.waitUntil === 'function') {
-          context.waitUntil(followupPromise);
-        }
-
-        return new JsonResponse({
-          type: InteractionResponseType.LAUNCH_ACTIVITY,
-        });
+        return launchLoldleActivity(interaction, env, context);
       }
       default:
         return new JsonResponse({ error: 'Unknown Type' }, { status: 400 });
     }
   }
 
+  if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
+    const customId = interaction.data?.custom_id;
+    if (customId === LOLDLE_PLAY_CUSTOM_ID) {
+      // Play button on the daily progress board — same launch path as /loldle.
+      return launchLoldleActivity(interaction, env, context);
+    }
+    return new JsonResponse({ error: 'Unknown component' }, { status: 400 });
+  }
+
   console.error('Unknown Type');
   return new JsonResponse({ error: 'Unknown Type' }, { status: 400 });
 });
+
+function launchLoldleActivity(interaction, env, context) {
+  const followupPromise = sendLoldleProgressFollowup(interaction, env).catch(
+    (error) => {
+      console.error('Error upserting Loldle progress message:', error);
+    },
+  );
+
+  if (context && typeof context.waitUntil === 'function') {
+    context.waitUntil(followupPromise);
+  }
+
+  return new JsonResponse({
+    type: InteractionResponseType.LAUNCH_ACTIVITY,
+  });
+}
 router.all('*', () => new Response('Not Found.', { status: 404 }));
 
 async function verifyDiscordRequest(request, env) {

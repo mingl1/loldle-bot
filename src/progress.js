@@ -6,10 +6,35 @@
  * on every /loldle.
  */
 
+import { ButtonStyleTypes, MessageComponentTypes } from 'discord-interactions';
+
 export const DAILY_TIME_ZONE = 'America/New_York';
+
+/** custom_id for the Play button on the daily progress board. */
+export const LOLDLE_PLAY_CUSTOM_ID = 'loldle_play';
 
 /** Re-sync after /loldle so the first launcher shows up without a second slash. */
 export const DEFAULT_LAUNCH_REFRESH_DELAYS_MS = [2500, 7000, 15000, 25000];
+
+/**
+ * Action row with a Play button that launches the Loldle Activity
+ * (handled via MESSAGE_COMPONENT → LAUNCH_ACTIVITY).
+ */
+export function buildProgressMessageComponents() {
+  return [
+    {
+      type: MessageComponentTypes.ACTION_ROW,
+      components: [
+        {
+          type: MessageComponentTypes.BUTTON,
+          style: ButtonStyleTypes.PRIMARY,
+          label: 'Play',
+          custom_id: LOLDLE_PLAY_CUSTOM_ID,
+        },
+      ],
+    },
+  ];
+}
 
 export function getDailyDateKey(date = new Date()) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -323,7 +348,10 @@ export async function upsertChannelProgressMessage({
   embed,
   fetchImpl = fetch,
 }) {
-  const body = { embeds: [embed] };
+  const body = {
+    embeds: [embed],
+    components: buildProgressMessageComponents(),
+  };
 
   if (botToken && channelId && applicationId) {
     try {
