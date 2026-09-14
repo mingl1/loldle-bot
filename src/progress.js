@@ -72,17 +72,37 @@ export function normalizePlayer(player = {}) {
   };
 }
 
+export function getFewestSolvedGuessCount(players = []) {
+  const solvedGuessCounts = players
+    .map(normalizePlayer)
+    .filter((player) => player.solved)
+    .map((player) => Number(player.guessCount))
+    .filter((count) => Number.isFinite(count));
+
+  if (!solvedGuessCounts.length) {
+    return null;
+  }
+
+  return Math.min(...solvedGuessCounts);
+}
+
 export function formatProgressLines(players = []) {
   if (!players.length) {
     return ["No one in this channel has started today's Loldle yet."];
   }
+
+  const fewestSolvedGuesses = getFewestSolvedGuessCount(players);
 
   return players.map((player) => {
     const normalized = normalizePlayer(player);
     const name = normalized.username || 'Unknown';
     if (normalized.solved) {
       const guesses = normalized.guessCount ?? '?';
-      return `✅ **${name}** — ${guesses}/∞`;
+      const isCrown =
+        fewestSolvedGuesses !== null &&
+        Number(normalized.guessCount) === fewestSolvedGuesses;
+      const prefix = isCrown ? '👑' : '✅';
+      return `${prefix} **${name}** — ${guesses}/∞`;
     }
     const guesses = normalized.guessCount ?? 0;
     return `🔄 **${name}** — ${guesses} guess${guesses === 1 ? '' : 'es'}`;
