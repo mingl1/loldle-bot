@@ -88,24 +88,79 @@ export function getDiscordVisibleName({ member, user } = {}) {
 }
 
 export function normalizePlayer(player = {}) {
+  const username = player.username ?? player.name ?? 'Unknown';
+  const stringName =
+    player.stringName ??
+    player.string_name ??
+    player.displayName ??
+    player.display_name ??
+    username;
+  const discordName =
+    player.discordName ??
+    player.discord_name ??
+    player.discordUsername ??
+    player.discord_username ??
+    null;
+  const shareImageUrl =
+    player.shareImageUrl ??
+    player.share_image_url ??
+    player.shareUrl ??
+    player.share_url ??
+    null;
+
   return {
     userId: player.userId ?? player.user_id ?? player.id,
-    username: player.username ?? player.name ?? 'Unknown',
+    username,
+    stringName,
+    discordName:
+      typeof discordName === 'string' && discordName.trim()
+        ? discordName.trim()
+        : null,
+    shareImageUrl:
+      typeof shareImageUrl === 'string' && shareImageUrl.trim()
+        ? shareImageUrl.trim()
+        : null,
     guessCount: player.guessCount ?? player.guess_count ?? player.guesses ?? 0,
     solved: Boolean(player.solved ?? player.isSolved ?? false),
   };
 }
 
 /**
- * Prefer a user mention so Discord clients render the server nick / display
- * name others see in the channel. Mentions inside embeds do not ping.
+ * Escape Discord markdown link label/destination breakers in display names.
+ */
+export function escapeMarkdownLinkText(text = '') {
+  return String(text).replace(/[[\]]/g, '\\$&');
+}
+
+/**
+ * Board label: `[stringName](shareImageUrl) (@discordName)` when a share URL
+ * exists; otherwise `stringName (@discordName)`. Falls back to a user mention
+ * only when no string/discord names are available but userId is.
  */
 export function formatPlayerDisplayName(player = {}) {
   const normalized = normalizePlayer(player);
-  if (normalized.userId) {
-    return `<@${normalized.userId}>`;
+  const stringName = normalized.stringName || normalized.username || 'Unknown';
+  const handle = normalized.discordName;
+  // Avoid redundant "Ada (@Ada)" when display name equals the Discord handle.
+  const handleSuffix =
+    handle && handle.toLowerCase() !== stringName.toLowerCase()
+      ? ` (@${handle})`
+      : '';
+
+  if (normalized.shareImageUrl) {
+    const label = escapeMarkdownLinkText(stringName);
+    return `[${label}](${normalized.shareImageUrl})${handleSuffix}`;
   }
-  return normalized.username || 'Unknown';
+
+  if (stringName && stringName !== 'Unknown') {
+    return `${stringName}${handleSuffix}`;
+  }
+
+  if (normalized.userId) {
+    return `<@${normalized.userId}>${handleSuffix}`;
+  }
+
+  return `Unknown${handleSuffix}`;
 }
 
 export function getFewestSolvedGuessCount(players = []) {
@@ -132,16 +187,18 @@ export function formatProgressLines(players = []) {
   return players.map((player) => {
     const normalized = normalizePlayer(player);
     const name = formatPlayerDisplayName(normalized);
+    // Linked names already carry markdown; keep unlinked names bold.
+    const nameMarkup = normalized.shareImageUrl ? name : `**${name}**`;
     if (normalized.solved) {
       const guesses = normalized.guessCount ?? '?';
       const isCrown =
         fewestSolvedGuesses !== null &&
         Number(normalized.guessCount) === fewestSolvedGuesses;
       const prefix = isCrown ? '👑' : '✅';
-      return `${prefix} **${name}** — ${guesses}/∞`;
+      return `${prefix} ${nameMarkup} — ${guesses}/∞`;
     }
     const guesses = normalized.guessCount ?? 0;
-    return `🔄 **${name}** — ${guesses} guess${guesses === 1 ? '' : 'es'}`;
+    return `🔄 ${nameMarkup} — ${guesses} guess${guesses === 1 ? '' : 'es'}`;
   });
 }
 
@@ -163,9 +220,17 @@ export function getLaunchPlayer(interaction) {
   if (!user?.id) {
     return null;
   }
+  const discordName =
+    typeof user.username === 'string' && user.username.trim()
+      ? user.username.trim()
+      : null;
+  const stringName = getDiscordVisibleName({ member, user });
   return {
     userId: user.id,
-    username: getDiscordVisibleName({ member, user }),
+    username: stringName,
+    stringName,
+    discordName,
+    shareImageUrl: null,
     guessCount: 0,
     solved: false,
   };
