@@ -52,11 +52,10 @@ router.get('/', (request, env) => {
  *   "players": [               // optional — paint board from this snapshot
  *     {
  *       "userId": "...",
- *       "username": "...",            // legacy display fallback
- *       "stringName": "...",          // clickable label (display name)
- *       "discordName": "...",         // shown as (@discordName)
- *       "shareImageUrl": "https://…", // CDN URL for share PNG
- *       "guessCount": 3,
+ *       "username": "...",     // legacy display fallback
+ *       "stringName": "...",   // display name on the board
+ *       "discordName": "...",  // shown as (@discordName) when different
+ *       "guessCount": 3,       // rendered as emoji squares
  *       "solved": false
  *     }
  *   ]

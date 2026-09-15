@@ -18,6 +18,7 @@ import {
   progressEmbedTitle,
   findProgressMessage,
   formatProgressLines,
+  formatGuessEmojis,
   getLaunchPlayer,
   mergeLaunchPlayer,
   sendLoldleProgressFollowup,
@@ -154,7 +155,11 @@ describe('Server', () => {
       const editCall = fetchStub.getCalls().find((c) => c.args[0] === editUrl);
       expect(editCall.args[1].method).to.equal('PATCH');
       const payload = JSON.parse(editCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('**bming**');
+      expect(payload.embeds[0].description).to.include(
+        '🔄 **bming** — ⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜…×15 15 guesses',
+      );
+      expect(payload.embeds[0].description).to.not.include('<@');
+      expect(payload.embeds[0].description).to.not.include('](http');
     });
 
     it('should accept sync via waitUntil so a quick exit still finishes', async () => {
@@ -310,8 +315,9 @@ describe('Server', () => {
       expect(body.action).to.equal('edited');
       expect(fetchStub.calledOnce).to.equal(true);
       const payload = JSON.parse(fetchStub.firstCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('👑 **bming**');
-      expect(payload.embeds[0].description).to.include('8/∞');
+      expect(payload.embeds[0].description).to.include(
+        '👑 **bming** — 🟩🟩🟩🟩🟩🟩🟩🟩 8/∞',
+      );
     });
   });
 
@@ -782,9 +788,9 @@ describe('Server', () => {
       ]);
 
       expect(lines).to.deep.equal([
-        '✅ **Alice** — 5/∞',
-        '👑 **Bob** — 3/∞',
-        '🔄 **Carol** — 2 guesses',
+        '✅ **Alice** — 🟩🟩🟩🟩🟩 5/∞',
+        '👑 **Bob** — 🟩🟩🟩 3/∞',
+        '🔄 **Carol** — ⬜⬜ 2 guesses',
       ]);
     });
 
@@ -796,9 +802,9 @@ describe('Server', () => {
       ]);
 
       expect(lines).to.deep.equal([
-        '👑 **Alice** — 4/∞',
-        '👑 **Bob** — 4/∞',
-        '✅ **Carol** — 7/∞',
+        '👑 **Alice** — 🟩🟩🟩🟩 4/∞',
+        '👑 **Bob** — 🟩🟩🟩🟩 4/∞',
+        '✅ **Carol** — 🟩🟩🟩🟩🟩🟩🟩 7/∞',
       ]);
     });
 
@@ -809,8 +815,8 @@ describe('Server', () => {
       ]);
 
       expect(lines).to.deep.equal([
-        '🔄 **Alice** — 1 guess',
-        '👑 **Bob** — 8/∞',
+        '🔄 **Alice** — ⬜ 1 guess',
+        '👑 **Bob** — 🟩🟩🟩🟩🟩🟩🟩🟩 8/∞',
       ]);
     });
 
@@ -858,7 +864,6 @@ describe('Server', () => {
           username: 'bming',
           stringName: 'bming',
           discordName: 'bming',
-          shareImageUrl: null,
           guessCount: 0,
           solved: false,
         },
@@ -898,7 +903,7 @@ describe('Server', () => {
       });
     });
 
-    it('formats board names as stringName (@discordName) with optional share links', () => {
+    it('formats board names and Wordle-style guess emoji strips', () => {
       expect(
         getDiscordVisibleName({
           member: { nick: 'Server Nick' },
@@ -917,10 +922,18 @@ describe('Server', () => {
         formatPlayerDisplayName({
           stringName: 'Aria',
           discordName: 'aria_handle',
-          shareImageUrl: 'https://cdn.discordapp.com/attachments/1/2/a.png',
         }),
-      ).to.equal(
-        '[Aria](https://cdn.discordapp.com/attachments/1/2/a.png) (@aria_handle)',
+      ).to.equal('Aria (@aria_handle)');
+
+      // Never render bare Discord mentions (they show as numeric IDs in embeds).
+      expect(formatPlayerDisplayName({ userId: '99' })).to.equal('Unknown');
+      expect(formatPlayerDisplayName({ userId: '99' })).to.not.include('<@');
+
+      expect(formatGuessEmojis({ guessCount: 3, solved: true })).to.equal(
+        '🟩🟩🟩',
+      );
+      expect(formatGuessEmojis({ guessCount: 2, solved: false })).to.equal(
+        '⬜⬜',
       );
 
       expect(
@@ -928,7 +941,6 @@ describe('Server', () => {
           {
             stringName: 'Aria',
             discordName: 'aria_handle',
-            shareImageUrl: 'https://cdn.discordapp.com/attachments/1/2/a.png',
             guessCount: 3,
             solved: true,
           },
@@ -940,8 +952,8 @@ describe('Server', () => {
           },
         ]),
       ).to.deep.equal([
-        '👑 [Aria](https://cdn.discordapp.com/attachments/1/2/a.png) (@aria_handle) — 3/∞',
-        '🔄 **Jax (@jax_handle)** — 2 guesses',
+        '👑 **Aria (@aria_handle)** — 🟩🟩🟩 3/∞',
+        '🔄 **Jax (@jax_handle)** — ⬜⬜ 2 guesses',
       ]);
 
       expect(
@@ -953,7 +965,7 @@ describe('Server', () => {
             solved: false,
           },
         ]),
-      ).to.deep.equal(['🔄 **actual_handle** — 1 guess']);
+      ).to.deep.equal(['🔄 **actual_handle** — ⬜ 1 guess']);
     });
 
     it('re-syncs the board on an absolute schedule after launch', async () => {

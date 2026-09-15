@@ -87,80 +87,75 @@ export function getDiscordVisibleName({ member, user } = {}) {
   return username || 'Unknown';
 }
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 export function normalizePlayer(player = {}) {
-  const username = player.username ?? player.name ?? 'Unknown';
+  const username =
+    firstNonEmptyString(player.username, player.name) ?? 'Unknown';
   const stringName =
-    player.stringName ??
-    player.string_name ??
-    player.displayName ??
-    player.display_name ??
-    username;
-  const discordName =
-    player.discordName ??
-    player.discord_name ??
-    player.discordUsername ??
-    player.discord_username ??
-    null;
-  const shareImageUrl =
-    player.shareImageUrl ??
-    player.share_image_url ??
-    player.shareUrl ??
-    player.share_url ??
-    null;
+    firstNonEmptyString(
+      player.stringName,
+      player.string_name,
+      player.displayName,
+      player.display_name,
+      username !== 'Unknown' ? username : null,
+    ) ?? 'Unknown';
+  const discordName = firstNonEmptyString(
+    player.discordName,
+    player.discord_name,
+    player.discordUsername,
+    player.discord_username,
+  );
 
   return {
     userId: player.userId ?? player.user_id ?? player.id,
     username,
     stringName,
-    discordName:
-      typeof discordName === 'string' && discordName.trim()
-        ? discordName.trim()
-        : null,
-    shareImageUrl:
-      typeof shareImageUrl === 'string' && shareImageUrl.trim()
-        ? shareImageUrl.trim()
-        : null,
+    discordName,
     guessCount: player.guessCount ?? player.guess_count ?? player.guesses ?? 0,
     solved: Boolean(player.solved ?? player.isSolved ?? false),
   };
 }
 
 /**
- * Escape Discord markdown link label/destination breakers in display names.
- */
-export function escapeMarkdownLinkText(text = '') {
-  return String(text).replace(/[[\]]/g, '\\$&');
-}
-
-/**
- * Board label: `[stringName](shareImageUrl) (@discordName)` when a share URL
- * exists; otherwise `stringName (@discordName)`. Falls back to a user mention
- * only when no string/discord names are available but userId is.
+ * Player label as `stringName (@discordName)`.
+ * Never uses `<@userId>` mentions (those often render as raw numeric IDs).
  */
 export function formatPlayerDisplayName(player = {}) {
   const normalized = normalizePlayer(player);
   const stringName = normalized.stringName || normalized.username || 'Unknown';
   const handle = normalized.discordName;
-  // Avoid redundant "Ada (@Ada)" when display name equals the Discord handle.
-  const handleSuffix =
-    handle && handle.toLowerCase() !== stringName.toLowerCase()
-      ? ` (@${handle})`
-      : '';
-
-  if (normalized.shareImageUrl) {
-    const label = escapeMarkdownLinkText(stringName);
-    return `[${label}](${normalized.shareImageUrl})${handleSuffix}`;
+  if (handle && handle.toLowerCase() !== stringName.toLowerCase()) {
+    return `${stringName} (@${handle})`;
   }
+  return stringName;
+}
 
-  if (stringName && stringName !== 'Unknown') {
-    return `${stringName}${handleSuffix}`;
+/**
+ * Wordle-style attempt strip from guessCount only (no per-attribute grid).
+ * Solved → green squares; in progress → white squares.
+ */
+export function formatGuessEmojis(
+  player = {},
+  { maxSquares = 12, solvedEmoji = '🟩', unsolvedEmoji = '⬜' } = {},
+) {
+  const normalized = normalizePlayer(player);
+  const count = Math.max(0, Math.floor(Number(normalized.guessCount) || 0));
+  const emoji = normalized.solved ? solvedEmoji : unsolvedEmoji;
+  if (count <= 0) {
+    return normalized.solved ? solvedEmoji : '';
   }
-
-  if (normalized.userId) {
-    return `<@${normalized.userId}>${handleSuffix}`;
+  if (count <= maxSquares) {
+    return emoji.repeat(count);
   }
-
-  return `Unknown${handleSuffix}`;
+  return `${emoji.repeat(maxSquares)}…×${count}`;
 }
 
 export function getFewestSolvedGuessCount(players = []) {
@@ -187,18 +182,20 @@ export function formatProgressLines(players = []) {
   return players.map((player) => {
     const normalized = normalizePlayer(player);
     const name = formatPlayerDisplayName(normalized);
-    // Linked names already carry markdown; keep unlinked names bold.
-    const nameMarkup = normalized.shareImageUrl ? name : `**${name}**`;
+    const squares = formatGuessEmojis(normalized);
     if (normalized.solved) {
       const guesses = normalized.guessCount ?? '?';
       const isCrown =
         fewestSolvedGuesses !== null &&
         Number(normalized.guessCount) === fewestSolvedGuesses;
       const prefix = isCrown ? '👑' : '✅';
-      return `${prefix} ${nameMarkup} — ${guesses}/∞`;
+      return `${prefix} **${name}** — ${squares} ${guesses}/∞`;
     }
     const guesses = normalized.guessCount ?? 0;
-    return `🔄 ${nameMarkup} — ${guesses} guess${guesses === 1 ? '' : 'es'}`;
+    if (!guesses) {
+      return `🔄 **${name}** — no guesses yet`;
+    }
+    return `🔄 **${name}** — ${squares} ${guesses} guess${guesses === 1 ? '' : 'es'}`;
   });
 }
 
@@ -230,7 +227,6 @@ export function getLaunchPlayer(interaction) {
     username: stringName,
     stringName,
     discordName,
-    shareImageUrl: null,
     guessCount: 0,
     solved: false,
   };
