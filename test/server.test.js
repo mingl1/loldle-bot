@@ -18,13 +18,17 @@ import {
   progressEmbedTitle,
   findProgressMessage,
   formatProgressLines,
+  formatGuessRowEmojis,
+  formatPlayerGuessesContent,
   getLaunchPlayer,
   mergeLaunchPlayer,
   sendLoldleProgressFollowup,
   LOLDLE_PLAY_CUSTOM_ID,
+  LOLDLE_GUESSES_CUSTOM_ID_PREFIX,
   buildProgressMessageComponents,
   getDiscordVisibleName,
   formatPlayerDisplayName,
+  normalizePlayer,
 } from '../src/progress.js';
 import { ButtonStyleTypes, MessageComponentTypes } from 'discord-interactions';
 
@@ -154,7 +158,9 @@ describe('Server', () => {
       const editCall = fetchStub.getCalls().find((c) => c.args[0] === editUrl);
       expect(editCall.args[1].method).to.equal('PATCH');
       const payload = JSON.parse(editCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('**bming**');
+      expect(payload.embeds[0].description).to.include('🔄 **bming** — 15 guesses');
+      expect(payload.embeds[0].description).to.not.include('<@');
+      expect(payload.embeds[0].description).to.not.include('](http');
     });
 
     it('should accept sync via waitUntil so a quick exit still finishes', async () => {
@@ -310,8 +316,7 @@ describe('Server', () => {
       expect(body.action).to.equal('edited');
       expect(fetchStub.calledOnce).to.equal(true);
       const payload = JSON.parse(fetchStub.firstCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('👑 **bming**');
-      expect(payload.embeds[0].description).to.include('8/∞');
+      expect(payload.embeds[0].description).to.include('👑 **bming** — 8/∞');
     });
   });
 
@@ -499,6 +504,97 @@ describe('Server', () => {
       expect(payload.components).to.deep.equal(
         buildProgressMessageComponents(),
       );
+    });
+
+    it('should return an ephemeral Classic grid when a guess dropdown is used', async () => {
+      const dateKey = getDailyDateKey();
+      const progressUrl = `https://progress.example/channel-progress?channelId=channel-123&dateKey=${encodeURIComponent(dateKey)}`;
+      const interaction = {
+        type: InteractionType.MESSAGE_COMPONENT,
+        application_id: '123456789',
+        token: 'interaction-token',
+        channel_id: 'channel-123',
+        data: {
+          custom_id: `${LOLDLE_GUESSES_CUSTOM_ID_PREFIX}u1`,
+          component_type: MessageComponentTypes.STRING_SELECT,
+          values: ['1'],
+        },
+      };
+
+      const fetchStub = sandbox.stub(globalThis, 'fetch').callsFake(async (url) => {
+        if (url === progressUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({
+              channelId: 'channel-123',
+              dateKey,
+              players: [
+                {
+                  userId: 'u1',
+                  stringName: 'Aria',
+                  discordName: 'aria_handle',
+                  guessCount: 2,
+                  solved: true,
+                  guessRows: [
+                    [
+                      'wrong',
+                      'correct',
+                      'wrong',
+                      'wrong',
+                      'wrong',
+                      'wrong',
+                      'wrong',
+                      'higher',
+                    ],
+                    [
+                      'correct',
+                      'correct',
+                      'correct',
+                      'correct',
+                      'correct',
+                      'correct',
+                      'correct',
+                      'correct',
+                    ],
+                  ],
+                },
+              ],
+            }),
+            text: async () => '',
+          };
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      });
+
+      verifyDiscordRequestStub.resolves({
+        isValid: true,
+        interaction,
+      });
+
+      try {
+        const response = await server.fetch(
+          {
+            method: 'POST',
+            url: new URL('/', 'http://discordo.example'),
+          },
+          {
+            PROGRESS_API_BASE_URL: 'https://progress.example',
+            PROGRESS_API_SECRET: 'test-secret',
+          },
+        );
+        const body = await response.json();
+        expect(body.type).to.equal(
+          InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        );
+        expect(body.data.flags).to.equal(InteractionResponseFlags.EPHEMERAL);
+        expect(body.data.content).to.include('guess 2');
+        expect(body.data.content).to.include('🟩🟩🟩🟩🟩🟩🟩🟩');
+        expect(body.data.content).to.include('⬛🟩⬛⬛⬛⬛⬛🔼');
+      } finally {
+        fetchStub.restore();
+      }
     });
 
     it('should launch Loldle when the Play button is clicked', async () => {
@@ -814,16 +910,68 @@ describe('Server', () => {
       ]);
     });
 
-    it('buildProgressMessageComponents includes a Play launch button', () => {
-      const components = buildProgressMessageComponents();
-      expect(components).to.have.length(1);
-      expect(components[0].type).to.equal(MessageComponentTypes.ACTION_ROW);
+    it('buildProgressMessageComponents includes Play and per-player guess dropdowns', () => {
+      const components = buildProgressMessageComponents([
+        {
+          userId: 'u1',
+          stringName: 'Aria',
+          discordName: 'aria_handle',
+          guessCount: 2,
+          solved: false,
+          guessRows: [
+            [
+              'wrong',
+              'correct',
+              'partial',
+              'wrong',
+              'correct',
+              'wrong',
+              'partial',
+              'higher',
+            ],
+            {
+              champion: 'correct',
+              gender: 'correct',
+              lane: 'correct',
+              genre: 'correct',
+              resource: 'correct',
+              attackType: 'correct',
+              region: 'correct',
+              releaseDate: 'correct',
+            },
+          ],
+        },
+        {
+          userId: 'u2',
+          stringName: 'Jax',
+          guessCount: 0,
+          solved: false,
+        },
+      ]);
+      expect(components).to.have.length(2);
       expect(components[0].components[0]).to.deep.include({
         type: MessageComponentTypes.BUTTON,
         style: ButtonStyleTypes.PRIMARY,
         label: 'Play',
         custom_id: LOLDLE_PLAY_CUSTOM_ID,
       });
+      expect(components[1].components[0]).to.deep.include({
+        type: MessageComponentTypes.STRING_SELECT,
+        custom_id: `${LOLDLE_GUESSES_CUSTOM_ID_PREFIX}u1`,
+        placeholder: "Aria (@aria_handle)'s guesses",
+      });
+      expect(components[1].components[0].options).to.deep.equal([
+        {
+          label: '⬛🟩🟨⬛🟩⬛🟨🔼',
+          value: '0',
+          description: 'Guess 1',
+        },
+        {
+          label: '🟩🟩🟩🟩🟩🟩🟩🟩',
+          value: '1',
+          description: 'Guess 2',
+        },
+      ]);
     });
 
     it('findProgressMessage matches bot embed by title', () => {
@@ -858,9 +1006,9 @@ describe('Server', () => {
           username: 'bming',
           stringName: 'bming',
           discordName: 'bming',
-          shareImageUrl: null,
           guessCount: 0,
           solved: false,
+          guessRows: [],
         },
       ]);
     });
@@ -898,7 +1046,7 @@ describe('Server', () => {
       });
     });
 
-    it('formats board names as stringName (@discordName) with optional share links', () => {
+    it('formats board names and Classic guess-row emoji grids', () => {
       expect(
         getDiscordVisibleName({
           member: { nick: 'Server Nick' },
@@ -917,18 +1065,71 @@ describe('Server', () => {
         formatPlayerDisplayName({
           stringName: 'Aria',
           discordName: 'aria_handle',
-          shareImageUrl: 'https://cdn.discordapp.com/attachments/1/2/a.png',
         }),
-      ).to.equal(
-        '[Aria](https://cdn.discordapp.com/attachments/1/2/a.png) (@aria_handle)',
-      );
+      ).to.equal('Aria (@aria_handle)');
+
+      // Never render bare Discord mentions (they show as numeric IDs in embeds).
+      expect(formatPlayerDisplayName({ userId: '99' })).to.equal('Unknown');
+      expect(formatPlayerDisplayName({ userId: '99' })).to.not.include('<@');
+
+      expect(
+        formatGuessRowEmojis([
+          'wrong',
+          'correct',
+          'partial',
+          'wrong',
+          'correct',
+          'wrong',
+          'partial',
+          'higher',
+        ]),
+      ).to.equal('⬛🟩🟨⬛🟩⬛🟨🔼');
+
+      expect(
+        formatPlayerGuessesContent({
+          stringName: 'Aria',
+          guessRows: [
+            {
+              champion: 'wrong',
+              gender: 'correct',
+              lane: 'wrong',
+              genre: 'wrong',
+              resource: 'wrong',
+              attackType: 'wrong',
+              region: 'wrong',
+              releaseDate: 'lower',
+            },
+            [
+              'correct',
+              'correct',
+              'correct',
+              'correct',
+              'correct',
+              'correct',
+              'correct',
+              'correct',
+            ],
+          ],
+        }),
+      ).to.equal('**Aria**\n`1.` ⬛🟩⬛⬛⬛⬛⬛🔽\n`2.` 🟩🟩🟩🟩🟩🟩🟩🟩');
+
+      expect(
+        normalizePlayer({
+          userId: '1',
+          stringName: 'Aria',
+          guesses: [
+            ['wrong', 'correct', 'wrong', 'wrong', 'wrong', 'wrong', 'wrong', 'higher'],
+          ],
+        }).guessRows,
+      ).to.deep.equal([
+        ['wrong', 'correct', 'wrong', 'wrong', 'wrong', 'wrong', 'wrong', 'higher'],
+      ]);
 
       expect(
         formatProgressLines([
           {
             stringName: 'Aria',
             discordName: 'aria_handle',
-            shareImageUrl: 'https://cdn.discordapp.com/attachments/1/2/a.png',
             guessCount: 3,
             solved: true,
           },
@@ -940,7 +1141,7 @@ describe('Server', () => {
           },
         ]),
       ).to.deep.equal([
-        '👑 [Aria](https://cdn.discordapp.com/attachments/1/2/a.png) (@aria_handle) — 3/∞',
+        '👑 **Aria (@aria_handle)** — 3/∞',
         '🔄 **Jax (@jax_handle)** — 2 guesses',
       ]);
 

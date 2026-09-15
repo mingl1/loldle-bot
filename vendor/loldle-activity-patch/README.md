@@ -1,15 +1,24 @@
-# loldle-activity companion patch (clickable share links)
+# loldle-activity companion patch (emoji guess rows)
 
-This agent could not push to `mingl1/loldle-activity` (no write permission). Apply these changes there:
+This agent cannot push to `mingl1/loldle-activity`. Apply these changes there so the
+Progress API sends Classic attribute statuses the bot can render as emoji rows.
 
-1. From a checkout of `loldle-activity`:
-   `git apply /path/to/loldle-bot/vendor/loldle-activity-patch/clickable-share-links.patch`
-2. Or copy files from `files/` over the matching paths.
-3. Set Convex/Activity env `SHARE_CHANNEL_ID` to a private Discord channel the bot can post in.
-4. Redeploy the Activity + Convex (`npx convex deploy`).
+## Why
 
-## What it does
+The Discord board no longer uses share PNGs. Instead it shows a **dropdown per
+player**; each option is one guess row of colored emojis:
 
-- `/api/share` uploads PNGs to `SHARE_CHANNEL_ID` (no user DM) and returns the CDN URL.
-- On guess/finish, Activity generates the existing grid share image, hosts it, and stores `shareImageUrl`, `stringName`, `discordName` on `channelProgress`.
-- `GET /channel-progress` exposes those fields for the bot board.
+- 🟩 correct · 🟨 partial · ⬛ wrong · 🔼 / 🔽 release year
+
+## Apply
+
+1. Copy/merge `files/` into a `loldle-activity` checkout (or port the diffs).
+2. Deploy Convex so `channelProgress.guessRows` is available.
+3. Redeploy the Activity.
+
+## What changes
+
+- Persist `guessRows` (array of 8 statuses per guess) on `channelProgress`.
+- Expose `guessRows` from `GET /channel-progress`.
+- On guess/finish, Activity upserts status rows **instead of uploading a share image** for the board.
+- In-Activity share/copy buttons can keep using `generateShareImage` locally; that is unrelated to the channel board.

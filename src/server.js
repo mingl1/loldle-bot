@@ -13,6 +13,8 @@ import { getCuteUrl } from './reddit.js';
 import { InteractionResponseFlags } from 'discord-interactions';
 import {
   LOLDLE_PLAY_CUSTOM_ID,
+  isGuessesSelectCustomId,
+  loadGuessesSelectContent,
   sendLoldleProgressFollowup,
   syncChannelProgressWithFollowups,
   parseRefreshDelaysMs,
@@ -52,15 +54,24 @@ router.get('/', (request, env) => {
  *   "players": [               // optional — paint board from this snapshot
  *     {
  *       "userId": "...",
- *       "username": "...",            // legacy display fallback
- *       "stringName": "...",          // clickable label (display name)
- *       "discordName": "...",         // shown as (@discordName)
- *       "shareImageUrl": "https://…", // CDN URL for share PNG
+ *       "username": "...",     // legacy display fallback
+ *       "stringName": "...",   // display name on the board
+ *       "discordName": "...",  // shown as (@discordName) when different
  *       "guessCount": 3,
- *       "solved": false
+ *       "solved": false,
+ *       "guessRows": [         // optional — Classic attribute statuses per guess
+ *         ["wrong","correct","partial","wrong","correct","wrong","partial","higher"],
+ *         { "champion": "correct", "gender": "correct", "lane": "correct",
+ *           "genre": "correct", "resource": "correct", "attackType": "correct",
+ *           "region": "correct", "releaseDate": "correct" }
+ *       ]
  *     }
  *   ]
  * }
+ *
+ * When guessRows are present, the board message includes a dropdown per player
+ * (up to 4). Each dropdown option is one guess row of colored emojis
+ * (🟩 correct, 🟨 partial, ⬛ wrong, 🔼/🔽 release year).
  *
  * Returns quickly (202) when waitUntil is available so a fast Activity exit
  * does not cancel the Discord edit; follow-up re-syncs catch late finishes.
@@ -204,6 +215,18 @@ router.post('/', async (request, env, context) => {
     if (customId === LOLDLE_PLAY_CUSTOM_ID) {
       // Play button on the daily progress board — same launch path as /loldle.
       return launchLoldleActivity(interaction, env, context);
+    }
+    if (isGuessesSelectCustomId(customId)) {
+      // Player guess dropdown — ephemeral grid (each guess already listed as
+      // an option in the select; selecting one highlights that row).
+      const content = await loadGuessesSelectContent(interaction, env);
+      return new JsonResponse({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: {
+          content,
+          flags: InteractionResponseFlags.EPHEMERAL,
+        },
+      });
     }
     return new JsonResponse({ error: 'Unknown component' }, { status: 400 });
   }

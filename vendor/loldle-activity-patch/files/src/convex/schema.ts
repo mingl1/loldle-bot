@@ -1,6 +1,14 @@
 import { defineSchema, defineTable } from 'convex/server'
 import { v } from 'convex/values'
 
+const guessStatus = v.union(
+	v.literal('correct'),
+	v.literal('partial'),
+	v.literal('wrong'),
+	v.literal('higher'),
+	v.literal('lower')
+)
+
 export default defineSchema({
 	gameStates: defineTable({
 		userId: v.string(),
@@ -29,12 +37,15 @@ export default defineSchema({
 		guessCount: v.number(),
 		solved: v.boolean(),
 		updatedAt: v.number(),
-		/** Display name used as the clickable board label */
+		/** Display name used as the board label */
 		stringName: v.optional(v.string()),
 		/** Discord username handle shown as (@discordName) */
 		discordName: v.optional(v.string()),
-		/** CDN URL for the player's share PNG (grid only, no champ names) */
-		shareImageUrl: v.optional(v.string())
+		/**
+		 * Classic attribute statuses per guess, column order:
+		 * champion, gender, lane, genre, resource, attackType, region, releaseDate
+		 */
+		guessRows: v.optional(v.array(v.array(guessStatus)))
 	})
 		.index('by_channel_date', ['channelId', 'dateKey'])
 		.index('by_channel_date_user', ['channelId', 'dateKey', 'userId'])

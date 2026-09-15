@@ -13,6 +13,39 @@ export const DAILY_TIME_ZONE = 'America/New_York';
 /** custom_id for the Play button on the daily progress board. */
 export const LOLDLE_PLAY_CUSTOM_ID = 'loldle_play';
 
+/** Prefix for per-player guess String Select custom_ids (`loldle_guesses:<userId>`). */
+export const LOLDLE_GUESSES_CUSTOM_ID_PREFIX = 'loldle_guesses:';
+
+/**
+ * Discord allows 5 action rows per message. Row 0 is Play; the rest are
+ * per-player guess dropdowns.
+ */
+export const MAX_PLAYER_GUESS_DROPDOWNS = 4;
+
+/**
+ * Classic Loldle attribute columns (same order as the Activity share grid).
+ * Each guess row is one colored square per column.
+ */
+export const GUESS_STATUS_COLUMNS = [
+  'champion',
+  'gender',
+  'lane',
+  'genre',
+  'resource',
+  'attackType',
+  'region',
+  'releaseDate',
+];
+
+/** Map Classic statuses → Discord emoji (no champion names). */
+export const GUESS_STATUS_EMOJI = {
+  correct: '🟩',
+  partial: '🟨',
+  wrong: '⬛',
+  higher: '🔼',
+  lower: '🔽',
+};
+
 /**
  * Absolute ms-from-start times to re-sync after /loldle / Play.
  * (Not sequential sleeps — 25s here means ~25s after launch, not 2.5+7+15+25.)
@@ -28,12 +61,44 @@ export const DEFAULT_LAUNCH_REFRESH_DELAYS_MS = [
  */
 export const DEFAULT_SYNC_REFRESH_DELAYS_MS = [500, 2000, 5000];
 
+function truncateDiscord(text, maxLength) {
+  const value = String(text ?? '');
+  if (value.length <= maxLength) {
+    return value;
+  }
+  if (maxLength <= 1) {
+    return value.slice(0, maxLength);
+  }
+  return `${value.slice(0, maxLength - 1)}…`;
+}
+
+export function isGuessesSelectCustomId(customId) {
+  return (
+    typeof customId === 'string' &&
+    customId.startsWith(LOLDLE_GUESSES_CUSTOM_ID_PREFIX)
+  );
+}
+
+export function guessesSelectCustomIdForPlayer(player = {}) {
+  const normalized = normalizePlayer(player);
+  if (normalized.userId) {
+    return truncateDiscord(
+      `${LOLDLE_GUESSES_CUSTOM_ID_PREFIX}${normalized.userId}`,
+      100,
+    );
+  }
+  return truncateDiscord(
+    `${LOLDLE_GUESSES_CUSTOM_ID_PREFIX}name:${encodeURIComponent(normalized.stringName)}`,
+    100,
+  );
+}
+
 /**
- * Action row with a Play button that launches the Loldle Activity
- * (handled via MESSAGE_COMPONENT → LAUNCH_ACTIVITY).
+ * Play button + one String Select per player that has guessRows.
+ * Opening a player's dropdown lists each guess as one emoji-row option.
  */
-export function buildProgressMessageComponents() {
-  return [
+export function buildProgressMessageComponents(players = []) {
+  const components = [
     {
       type: MessageComponentTypes.ACTION_ROW,
       components: [
@@ -46,6 +111,34 @@ export function buildProgressMessageComponents() {
       ],
     },
   ];
+
+  const withGuessRows = players
+    .map(normalizePlayer)
+    .filter((player) => player.guessRows.length > 0)
+    .slice(0, MAX_PLAYER_GUESS_DROPDOWNS);
+
+  for (const player of withGuessRows) {
+    const name = formatPlayerDisplayName(player);
+    components.push({
+      type: MessageComponentTypes.ACTION_ROW,
+      components: [
+        {
+          type: MessageComponentTypes.STRING_SELECT,
+          custom_id: guessesSelectCustomIdForPlayer(player),
+          placeholder: truncateDiscord(`${name}'s guesses`, 150),
+          min_values: 1,
+          max_values: 1,
+          options: player.guessRows.slice(0, 25).map((row, index) => ({
+            label: truncateDiscord(formatGuessRowEmojis(row), 100),
+            value: String(index),
+            description: truncateDiscord(`Guess ${index + 1}`, 100),
+          })),
+        },
+      ],
+    });
+  }
+
+  return components;
 }
 
 export function getDailyDateKey(date = new Date()) {
@@ -87,80 +180,210 @@ export function getDiscordVisibleName({ member, user } = {}) {
   return username || 'Unknown';
 }
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function normalizeGuessStatus(value) {
+  if (typeof value !== 'string') {
+    return 'wrong';
+  }
+  const key = value.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(GUESS_STATUS_EMOJI, key)
+    ? key
+    : 'wrong';
+}
+
+/**
+ * Accept either:
+ * - `['correct','wrong',...]` in GUESS_STATUS_COLUMNS order
+ * - `{ status: { champion: 'correct', ... } }` / `{ champion: 'correct', ... }`
+ */
+export function normalizeGuessRow(row) {
+  if (Array.isArray(row)) {
+    return GUESS_STATUS_COLUMNS.map((_, index) =>
+      normalizeGuessStatus(row[index]),
+    );
+  }
+  if (row && typeof row === 'object') {
+    const status =
+      row.status && typeof row.status === 'object' ? row.status : row;
+    return GUESS_STATUS_COLUMNS.map((column) =>
+      normalizeGuessStatus(status[column]),
+    );
+  }
+  return GUESS_STATUS_COLUMNS.map(() => 'wrong');
+}
+
+export function normalizeGuessRows(rawRows) {
+  if (!Array.isArray(rawRows)) {
+    return [];
+  }
+  return rawRows.filter((row) => row != null).map(normalizeGuessRow);
+}
+
 export function normalizePlayer(player = {}) {
-  const username = player.username ?? player.name ?? 'Unknown';
+  const username =
+    firstNonEmptyString(player.username, player.name) ?? 'Unknown';
   const stringName =
-    player.stringName ??
-    player.string_name ??
-    player.displayName ??
-    player.display_name ??
-    username;
-  const discordName =
-    player.discordName ??
-    player.discord_name ??
-    player.discordUsername ??
-    player.discord_username ??
-    null;
-  const shareImageUrl =
-    player.shareImageUrl ??
-    player.share_image_url ??
-    player.shareUrl ??
-    player.share_url ??
-    null;
+    firstNonEmptyString(
+      player.stringName,
+      player.string_name,
+      player.displayName,
+      player.display_name,
+      username !== 'Unknown' ? username : null,
+    ) ?? 'Unknown';
+  const discordName = firstNonEmptyString(
+    player.discordName,
+    player.discord_name,
+    player.discordUsername,
+    player.discord_username,
+  );
+
+  const rawGuesses = player.guesses;
+  const guessRowsFromField = normalizeGuessRows(
+    player.guessRows ?? player.guess_rows ?? player.guessGrid ?? player.grid,
+  );
+  const guessRowsFromGuesses =
+    Array.isArray(rawGuesses) &&
+    rawGuesses.length > 0 &&
+    typeof rawGuesses[0] !== 'number'
+      ? normalizeGuessRows(rawGuesses)
+      : [];
+  const guessRows =
+    guessRowsFromField.length > 0 ? guessRowsFromField : guessRowsFromGuesses;
+
+  let guessCount =
+    player.guessCount ??
+    player.guess_count ??
+    (typeof rawGuesses === 'number' ? rawGuesses : undefined);
+  if (guessCount == null) {
+    guessCount = guessRows.length > 0 ? guessRows.length : 0;
+  }
 
   return {
     userId: player.userId ?? player.user_id ?? player.id,
     username,
     stringName,
-    discordName:
-      typeof discordName === 'string' && discordName.trim()
-        ? discordName.trim()
-        : null,
-    shareImageUrl:
-      typeof shareImageUrl === 'string' && shareImageUrl.trim()
-        ? shareImageUrl.trim()
-        : null,
-    guessCount: player.guessCount ?? player.guess_count ?? player.guesses ?? 0,
+    discordName,
+    guessCount,
     solved: Boolean(player.solved ?? player.isSolved ?? false),
+    guessRows,
   };
 }
 
 /**
- * Escape Discord markdown link label/destination breakers in display names.
- */
-export function escapeMarkdownLinkText(text = '') {
-  return String(text).replace(/[[\]]/g, '\\$&');
-}
-
-/**
- * Board label: `[stringName](shareImageUrl) (@discordName)` when a share URL
- * exists; otherwise `stringName (@discordName)`. Falls back to a user mention
- * only when no string/discord names are available but userId is.
+ * Player label as `stringName (@discordName)`.
+ * Never uses `<@userId>` mentions (those often render as raw numeric IDs).
  */
 export function formatPlayerDisplayName(player = {}) {
   const normalized = normalizePlayer(player);
   const stringName = normalized.stringName || normalized.username || 'Unknown';
   const handle = normalized.discordName;
-  // Avoid redundant "Ada (@Ada)" when display name equals the Discord handle.
-  const handleSuffix =
-    handle && handle.toLowerCase() !== stringName.toLowerCase()
-      ? ` (@${handle})`
-      : '';
+  if (handle && handle.toLowerCase() !== stringName.toLowerCase()) {
+    return `${stringName} (@${handle})`;
+  }
+  return stringName;
+}
 
-  if (normalized.shareImageUrl) {
-    const label = escapeMarkdownLinkText(stringName);
-    return `[${label}](${normalized.shareImageUrl})${handleSuffix}`;
+/** One Classic guess → emoji strip (🟩 correct, 🟨 partial, ⬛ wrong, 🔼/🔽 year). */
+export function formatGuessRowEmojis(row) {
+  return normalizeGuessRow(row)
+    .map((status) => GUESS_STATUS_EMOJI[status])
+    .join('');
+}
+
+export function formatPlayerGuessesContent(player = {}) {
+  const normalized = normalizePlayer(player);
+  const name = formatPlayerDisplayName(normalized);
+  if (!normalized.guessRows.length) {
+    return `**${name}** has no guess details yet.`;
+  }
+  const lines = normalized.guessRows.map(
+    (row, index) => `\`${index + 1}.\` ${formatGuessRowEmojis(row)}`,
+  );
+  return `**${name}**\n${lines.join('\n')}`;
+}
+
+export function findPlayerByGuessesSelectKey(players = [], key = '') {
+  const normalizedPlayers = players.map(normalizePlayer);
+  if (key.startsWith('name:')) {
+    let nameKey = key.slice('name:'.length);
+    try {
+      nameKey = decodeURIComponent(nameKey);
+    } catch {
+      // keep raw
+    }
+    return (
+      normalizedPlayers.find(
+        (player) =>
+          player.stringName.toLowerCase() === nameKey.toLowerCase() ||
+          player.username.toLowerCase() === nameKey.toLowerCase(),
+      ) ?? null
+    );
+  }
+  return (
+    normalizedPlayers.find((player) => String(player.userId) === String(key)) ??
+    null
+  );
+}
+
+/**
+ * Resolve ephemeral content when someone picks a guess from a player dropdown.
+ */
+export async function loadGuessesSelectContent(
+  interaction,
+  env,
+  fetchImpl = fetch,
+) {
+  const customId = interaction?.data?.custom_id ?? '';
+  const key = customId.slice(LOLDLE_GUESSES_CUSTOM_ID_PREFIX.length);
+  const channelId = interaction?.channel_id;
+  const selected = interaction?.data?.values?.[0];
+
+  if (!channelId || !env?.PROGRESS_API_BASE_URL || !env?.PROGRESS_API_SECRET) {
+    return 'Guess details are not available right now.';
   }
 
-  if (stringName && stringName !== 'Unknown') {
-    return `${stringName}${handleSuffix}`;
-  }
+  try {
+    const payload = await fetchChannelProgress({
+      baseUrl: env.PROGRESS_API_BASE_URL,
+      secret: env.PROGRESS_API_SECRET,
+      channelId,
+      dateKey: getDailyDateKey(),
+      fetchImpl,
+    });
+    const player = findPlayerByGuessesSelectKey(payload.players ?? [], key);
+    if (!player) {
+      return 'Could not find that player on today’s board.';
+    }
 
-  if (normalized.userId) {
-    return `<@${normalized.userId}>${handleSuffix}`;
+    const all = formatPlayerGuessesContent(player);
+    if (selected == null || selected === '') {
+      return all;
+    }
+    const index = Number(selected);
+    if (
+      !Number.isFinite(index) ||
+      index < 0 ||
+      index >= player.guessRows.length
+    ) {
+      return all;
+    }
+    return (
+      `**${formatPlayerDisplayName(player)}** · guess ${index + 1}\n` +
+      `${formatGuessRowEmojis(player.guessRows[index])}\n\n` +
+      all
+    );
+  } catch (error) {
+    console.error('Failed to load guess dropdown details:', error);
+    return 'Could not load guess details right now.';
   }
-
-  return `Unknown${handleSuffix}`;
 }
 
 export function getFewestSolvedGuessCount(players = []) {
@@ -187,29 +410,39 @@ export function formatProgressLines(players = []) {
   return players.map((player) => {
     const normalized = normalizePlayer(player);
     const name = formatPlayerDisplayName(normalized);
-    // Linked names already carry markdown; keep unlinked names bold.
-    const nameMarkup = normalized.shareImageUrl ? name : `**${name}**`;
     if (normalized.solved) {
       const guesses = normalized.guessCount ?? '?';
       const isCrown =
         fewestSolvedGuesses !== null &&
         Number(normalized.guessCount) === fewestSolvedGuesses;
       const prefix = isCrown ? '👑' : '✅';
-      return `${prefix} ${nameMarkup} — ${guesses}/∞`;
+      return `${prefix} **${name}** — ${guesses}/∞`;
     }
     const guesses = normalized.guessCount ?? 0;
-    return `🔄 ${nameMarkup} — ${guesses} guess${guesses === 1 ? '' : 'es'}`;
+    if (!guesses) {
+      return `🔄 **${name}** — no guesses yet`;
+    }
+    return `🔄 **${name}** — ${guesses} guess${guesses === 1 ? '' : 'es'}`;
   });
 }
 
 export function buildProgressEmbed({ dateKey, players }) {
   const lines = formatProgressLines(players);
+  const withGuessRows = players
+    .map(normalizePlayer)
+    .filter((player) => player.guessRows.length > 0).length;
+  const footerExtra =
+    withGuessRows > MAX_PLAYER_GUESS_DROPDOWNS
+      ? ` · guess dropdowns for first ${MAX_PLAYER_GUESS_DROPDOWNS} players`
+      : withGuessRows > 0
+        ? ' · open a player dropdown for guess rows'
+        : '';
   return {
     title: progressEmbedTitle(dateKey),
     description: lines.join('\n'),
     color: 0xc8aa6e,
     footer: {
-      text: 'Same-channel progress for today (America/New_York)',
+      text: `Same-channel progress for today (America/New_York)${footerExtra}`,
     },
   };
 }
@@ -230,9 +463,9 @@ export function getLaunchPlayer(interaction) {
     username: stringName,
     stringName,
     discordName,
-    shareImageUrl: null,
     guessCount: 0,
     solved: false,
+    guessRows: [],
   };
 }
 
@@ -525,12 +758,13 @@ export async function upsertChannelProgressMessage({
   interactionToken,
   dateKey,
   embed,
+  players = [],
   messageId = null,
   fetchImpl = fetch,
 }) {
   const body = {
     embeds: [embed],
-    components: buildProgressMessageComponents(),
+    components: buildProgressMessageComponents(players),
     // Mentions in embeds don't ping, but keep parse empty as a safeguard.
     allowed_mentions: { parse: [] },
   };
@@ -677,7 +911,7 @@ export async function sendLoldleProgressFollowup(
   }
 
   const launchPlayer = getLaunchPlayer(interaction);
-  const { embed, dateKey } = await loadProgressEmbed({
+  const { embed, dateKey, players } = await loadProgressEmbed({
     env,
     channelId,
     launchPlayer,
@@ -691,6 +925,7 @@ export async function sendLoldleProgressFollowup(
     interactionToken,
     dateKey,
     embed,
+    players,
     fetchImpl,
   });
 
@@ -743,7 +978,7 @@ export async function syncChannelProgress(
   }
 
   const resolvedDateKey = dateKey || getDailyDateKey();
-  const { embed } = await loadProgressEmbed({
+  const { embed, players: resolvedPlayers } = await loadProgressEmbed({
     env,
     channelId,
     dateKey: resolvedDateKey,
@@ -758,6 +993,7 @@ export async function syncChannelProgress(
     dateKey: resolvedDateKey,
     messageId,
     embed,
+    players: resolvedPlayers,
     fetchImpl,
   });
 }

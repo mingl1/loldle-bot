@@ -67,7 +67,7 @@ http.route({
 					updatedAt: player.updatedAt,
 					stringName: player.stringName ?? player.username,
 					discordName: player.discordName,
-					shareImageUrl: player.shareImageUrl
+					guessRows: player.guessRows ?? []
 				}))
 			}),
 			{ status: 200, headers: corsHeaders }

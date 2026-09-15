@@ -1,6 +1,16 @@
 import { mutation, query } from './_generated/server'
 import { v } from 'convex/values'
 
+const guessStatus = v.union(
+	v.literal('correct'),
+	v.literal('partial'),
+	v.literal('wrong'),
+	v.literal('higher'),
+	v.literal('lower')
+)
+
+const guessRowsValidator = v.array(v.array(guessStatus))
+
 const channelProgressValidator = v.object({
 	_id: v.id('channelProgress'),
 	_creationTime: v.number(),
@@ -13,7 +23,7 @@ const channelProgressValidator = v.object({
 	updatedAt: v.number(),
 	stringName: v.optional(v.string()),
 	discordName: v.optional(v.string()),
-	shareImageUrl: v.optional(v.string())
+	guessRows: v.optional(guessRowsValidator)
 })
 
 export const listByChannelDate = query({
@@ -43,7 +53,7 @@ export const upsert = mutation({
 		solved: v.boolean(),
 		stringName: v.optional(v.string()),
 		discordName: v.optional(v.string()),
-		shareImageUrl: v.optional(v.string())
+		guessRows: v.optional(guessRowsValidator)
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -62,6 +72,7 @@ export const upsert = mutation({
 		const username = args.username.trim() || 'Unknown'
 		const stringName = args.stringName?.trim() || username
 		const discordName = args.discordName?.trim() || undefined
+		const guessRows = args.guessRows
 
 		if (!existing) {
 			await ctx.db.insert('channelProgress', {
@@ -74,7 +85,7 @@ export const upsert = mutation({
 				updatedAt,
 				stringName,
 				...(discordName ? { discordName } : {}),
-				...(args.shareImageUrl ? { shareImageUrl: args.shareImageUrl } : {})
+				...(guessRows ? { guessRows } : {})
 			})
 			return null
 		}
@@ -86,7 +97,7 @@ export const upsert = mutation({
 			updatedAt,
 			stringName,
 			...(discordName ? { discordName } : {}),
-			...(args.shareImageUrl ? { shareImageUrl: args.shareImageUrl } : {})
+			...(guessRows ? { guessRows } : {})
 		})
 		return null
 	}
