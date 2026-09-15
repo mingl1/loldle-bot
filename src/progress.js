@@ -3,7 +3,8 @@
  *
  * Wordle-style board: keep one channel message per day and edit it in place
  * (via Bot token / interaction webhook) instead of posting a new follow-up
- * on every /loldle.
+ * on every /loldle. If more than MAX_MESSAGES_AFTER_PROGRESS_BOARD messages
+ * land after the board, post a fresh one so it stays near the bottom.
  */
 
 import { ButtonStyleTypes, MessageComponentTypes } from 'discord-interactions';
@@ -12,6 +13,12 @@ export const DAILY_TIME_ZONE = 'America/New_York';
 
 /** custom_id for the Play button on the daily progress board. */
 export const LOLDLE_PLAY_CUSTOM_ID = 'loldle_play';
+
+/**
+ * When chat buries today's board under more than this many newer messages,
+ * upsert creates a new board instead of editing the scrolled-away one.
+ */
+export const MAX_MESSAGES_AFTER_PROGRESS_BOARD = 10;
 
 /** Prefix for per-player guess String Select custom_ids (`loldle_guesses:<userId>`). */
 export const LOLDLE_GUESSES_CUSTOM_ID_PREFIX = 'loldle_guesses:';
@@ -695,6 +702,38 @@ export function findProgressMessage(messages, { dateKey, applicationId }) {
   );
 }
 
+/**
+ * Discord returns channel messages newest-first, so the index of a message
+ * is how many newer messages sit after (below) it in the channel.
+ * Returns null when the message is not in the fetched window.
+ */
+export function countMessagesAfter(messages, messageId) {
+  if (!messageId || !Array.isArray(messages)) {
+    return null;
+  }
+  const index = messages.findIndex((message) => message?.id === messageId);
+  return index === -1 ? null : index;
+}
+
+/**
+ * True when we should post a new board instead of editing `existing`.
+ * Missing / unknown position (outside the fetch window) counts as buried.
+ */
+export function shouldCreateNewProgressMessage(
+  messages,
+  existing,
+  maxAfter = MAX_MESSAGES_AFTER_PROGRESS_BOARD,
+) {
+  if (!existing?.id) {
+    return true;
+  }
+  const after = countMessagesAfter(messages, existing.id);
+  if (after === null) {
+    return true;
+  }
+  return after > maxAfter;
+}
+
 export async function editChannelMessage({
   channelId,
   messageId,
@@ -750,6 +789,9 @@ export async function createChannelMessage({
  * Keep a single daily progress message in the channel.
  * Prefer Bot-token edit/create so the board stays editable all day
  * (interaction tokens expire after ~15 minutes).
+ *
+ * If today's board is still near the bottom (≤ MAX_MESSAGES_AFTER_PROGRESS_BOARD
+ * newer messages), edit it. If chat has buried it, create a fresh board.
  */
 export async function upsertChannelProgressMessage({
   channelId,
@@ -769,23 +811,7 @@ export async function upsertChannelProgressMessage({
     allowed_mentions: { parse: [] },
   };
 
-  if (botToken && channelId && messageId) {
-    try {
-      const updated = await editChannelMessage({
-        channelId,
-        messageId,
-        botToken,
-        body,
-        fetchImpl,
-      });
-      return { action: 'edited', message: updated };
-    } catch (error) {
-      console.error(
-        'Direct edit by messageId failed; falling back to channel lookup:',
-        error,
-      );
-    }
-  }
+  let lookupFailed = false;
 
   if (botToken && channelId && applicationId) {
     try {
@@ -798,7 +824,7 @@ export async function upsertChannelProgressMessage({
         dateKey,
         applicationId,
       });
-      if (existing) {
+      if (existing && !shouldCreateNewProgressMessage(messages, existing)) {
         const updated = await editChannelMessage({
           channelId,
           messageId: existing.id,
@@ -809,10 +835,31 @@ export async function upsertChannelProgressMessage({
         return { action: 'edited', message: updated };
       }
     } catch (error) {
+      lookupFailed = true;
       console.error(
-        'Failed to look up existing progress message; will create instead:',
+        'Failed to look up existing progress message; will create or fall back:',
         error,
       );
+    }
+
+    // messageId shortcut: only when history lookup failed (so we couldn't
+    // check burial). Otherwise a buried board must become a new message.
+    if (lookupFailed && messageId) {
+      try {
+        const updated = await editChannelMessage({
+          channelId,
+          messageId,
+          botToken,
+          body,
+          fetchImpl,
+        });
+        return { action: 'edited', message: updated };
+      } catch (error) {
+        console.error(
+          'Direct edit by messageId failed; falling back to create:',
+          error,
+        );
+      }
     }
 
     try {
@@ -826,6 +873,23 @@ export async function upsertChannelProgressMessage({
     } catch (error) {
       console.error(
         'Failed to create progress message with bot token; trying interaction follow-up:',
+        error,
+      );
+    }
+  } else if (botToken && channelId && messageId) {
+    // No applicationId to match embeds — best-effort edit by id.
+    try {
+      const updated = await editChannelMessage({
+        channelId,
+        messageId,
+        botToken,
+        body,
+        fetchImpl,
+      });
+      return { action: 'edited', message: updated };
+    } catch (error) {
+      console.error(
+        'Direct edit by messageId failed; trying interaction follow-up:',
         error,
       );
     }
@@ -958,7 +1022,8 @@ export async function sendLoldleProgressFollowup(
  *
  * Optional `players` paints the board from the POST body (skips Progress GET),
  * useful so a finish always lands even if the Activity closes immediately.
- * Optional `messageId` skips the channel history lookup for a faster edit.
+ * Optional `messageId` is a fallback edit target when channel history lookup
+ * fails; burial checks still prefer a fresh post when chat has moved on.
  */
 export async function syncChannelProgress(
   { channelId, dateKey, messageId = null, players = null },
