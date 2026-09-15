@@ -17,6 +17,9 @@ import {
   getDailyDateKey,
   progressEmbedTitle,
   findProgressMessage,
+  countMessagesAfter,
+  shouldCreateNewProgressMessage,
+  MAX_MESSAGES_AFTER_PROGRESS_BOARD,
   formatProgressLines,
   formatGuessRowEmojis,
   formatPlayerGuessesContent,
@@ -158,7 +161,9 @@ describe('Server', () => {
       const editCall = fetchStub.getCalls().find((c) => c.args[0] === editUrl);
       expect(editCall.args[1].method).to.equal('PATCH');
       const payload = JSON.parse(editCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('🔄 **bming** — 15 guesses');
+      expect(payload.embeds[0].description).to.include(
+        '🔄 **bming** — 15 guesses',
+      );
       expect(payload.embeds[0].description).to.not.include('<@');
       expect(payload.embeds[0].description).to.not.include('](http');
     });
@@ -265,11 +270,29 @@ describe('Server', () => {
 
     it('should paint a finish from an optional players snapshot without Progress GET', async () => {
       const dateKey = getDailyDateKey();
+      const title = progressEmbedTitle(dateKey);
+      const messagesUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages?limit=50';
       const editUrl =
         'https://discord.com/api/v10/channels/channel-123/messages/msg-9';
 
       const fetchStub = sandbox.stub(globalThis, 'fetch');
       fetchStub.callsFake(async (url) => {
+        if (url === messagesUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => [
+              {
+                id: 'msg-9',
+                author: { id: 'app-1' },
+                embeds: [{ title }],
+              },
+            ],
+            text: async () => '',
+          };
+        }
         if (url === editUrl) {
           return {
             ok: true,
@@ -314,9 +337,98 @@ describe('Server', () => {
       expect(response.status).to.equal(200);
       expect(body.ok).to.equal(true);
       expect(body.action).to.equal('edited');
-      expect(fetchStub.calledOnce).to.equal(true);
-      const payload = JSON.parse(fetchStub.firstCall.args[1].body);
+      expect(fetchStub.calledWith(editUrl)).to.equal(true);
+      const payload = JSON.parse(
+        fetchStub.getCalls().find((c) => c.args[0] === editUrl).args[1].body,
+      );
       expect(payload.embeds[0].description).to.include('👑 **bming** — 8/∞');
+    });
+
+    it('should create a new board when more than 10 messages follow the last one', async () => {
+      const dateKey = getDailyDateKey();
+      const title = progressEmbedTitle(dateKey);
+      const messagesUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages?limit=50';
+      const createUrl =
+        'https://discord.com/api/v10/channels/channel-123/messages';
+
+      const newerMessages = Array.from({ length: 11 }, (_, i) => ({
+        id: `chat-${i}`,
+        author: { id: 'user' },
+        embeds: [],
+      }));
+
+      const fetchStub = sandbox.stub(globalThis, 'fetch');
+      fetchStub.callsFake(async (url) => {
+        if (url === messagesUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => [
+              ...newerMessages,
+              {
+                id: 'msg-old',
+                author: { id: 'app-1' },
+                embeds: [{ title }],
+              },
+            ],
+            text: async () => '',
+          };
+        }
+        if (url === createUrl) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({ id: 'msg-new' }),
+            text: async () => '',
+          };
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      });
+
+      const request = {
+        method: 'POST',
+        url: new URL('/sync-progress', 'http://discordo.example'),
+        headers: new Headers({ Authorization: 'Bearer test-secret' }),
+        json: async () => ({
+          channelId: 'channel-123',
+          messageId: 'msg-old',
+          dateKey,
+          players: [
+            {
+              userId: '1',
+              username: 'bming',
+              guessCount: 3,
+              solved: false,
+            },
+          ],
+        }),
+      };
+      const env = {
+        PROGRESS_API_SECRET: 'test-secret',
+        PROGRESS_API_BASE_URL: 'https://progress.example',
+        DISCORD_APPLICATION_ID: 'app-1',
+        DISCORD_TOKEN: 'bot-token',
+        PROGRESS_SYNC_REFRESH_DELAYS_MS: '[]',
+      };
+
+      const response = await server.fetch(request, env);
+      const body = await response.json();
+
+      expect(response.status).to.equal(200);
+      expect(body).to.deep.equal({
+        ok: true,
+        accepted: false,
+        action: 'created',
+        messageId: 'msg-new',
+      });
+      expect(fetchStub.calledWith(createUrl)).to.equal(true);
+      const createCall = fetchStub
+        .getCalls()
+        .find((c) => c.args[0] === createUrl);
+      expect(createCall.args[1].method).to.equal('POST');
     });
   });
 
@@ -521,52 +633,54 @@ describe('Server', () => {
         },
       };
 
-      const fetchStub = sandbox.stub(globalThis, 'fetch').callsFake(async (url) => {
-        if (url === progressUrl) {
-          return {
-            ok: true,
-            status: 200,
-            statusText: 'OK',
-            json: async () => ({
-              channelId: 'channel-123',
-              dateKey,
-              players: [
-                {
-                  userId: 'u1',
-                  stringName: 'Aria',
-                  discordName: 'aria_handle',
-                  guessCount: 2,
-                  solved: true,
-                  guessRows: [
-                    [
-                      'wrong',
-                      'correct',
-                      'wrong',
-                      'wrong',
-                      'wrong',
-                      'wrong',
-                      'wrong',
-                      'higher',
+      const fetchStub = sandbox
+        .stub(globalThis, 'fetch')
+        .callsFake(async (url) => {
+          if (url === progressUrl) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              json: async () => ({
+                channelId: 'channel-123',
+                dateKey,
+                players: [
+                  {
+                    userId: 'u1',
+                    stringName: 'Aria',
+                    discordName: 'aria_handle',
+                    guessCount: 2,
+                    solved: true,
+                    guessRows: [
+                      [
+                        'wrong',
+                        'correct',
+                        'wrong',
+                        'wrong',
+                        'wrong',
+                        'wrong',
+                        'wrong',
+                        'higher',
+                      ],
+                      [
+                        'correct',
+                        'correct',
+                        'correct',
+                        'correct',
+                        'correct',
+                        'correct',
+                        'correct',
+                        'correct',
+                      ],
                     ],
-                    [
-                      'correct',
-                      'correct',
-                      'correct',
-                      'correct',
-                      'correct',
-                      'correct',
-                      'correct',
-                      'correct',
-                    ],
-                  ],
-                },
-              ],
-            }),
-            text: async () => '',
-          };
-        }
-        throw new Error(`Unexpected fetch URL: ${url}`);
-      });
+                  },
+                ],
+              }),
+              text: async () => '',
+            };
+          }
+          throw new Error(`Unexpected fetch URL: ${url}`);
+        });
 
       verifyDiscordRequestStub.resolves({
         isValid: true,
@@ -995,6 +1109,29 @@ describe('Server', () => {
       expect(found.id).to.equal('2');
     });
 
+    it('republishes when more than 10 messages follow the board', () => {
+      expect(MAX_MESSAGES_AFTER_PROGRESS_BOARD).to.equal(10);
+
+      const board = { id: 'board' };
+      const tenAfter = [
+        ...Array.from({ length: 10 }, (_, i) => ({ id: `n${i}` })),
+        board,
+      ];
+      const elevenAfter = [
+        ...Array.from({ length: 11 }, (_, i) => ({ id: `n${i}` })),
+        board,
+      ];
+
+      expect(countMessagesAfter(tenAfter, 'board')).to.equal(10);
+      expect(countMessagesAfter(elevenAfter, 'board')).to.equal(11);
+      expect(countMessagesAfter(tenAfter, 'missing')).to.equal(null);
+
+      expect(shouldCreateNewProgressMessage(tenAfter, board)).to.equal(false);
+      expect(shouldCreateNewProgressMessage(elevenAfter, board)).to.equal(true);
+      expect(shouldCreateNewProgressMessage([], board)).to.equal(true);
+      expect(shouldCreateNewProgressMessage(tenAfter, null)).to.equal(true);
+    });
+
     it('seeds the /loldle launcher when progress is still empty', () => {
       const launchPlayer = getLaunchPlayer({
         user: { id: 'u1', username: 'bming' },
@@ -1118,11 +1255,29 @@ describe('Server', () => {
           userId: '1',
           stringName: 'Aria',
           guesses: [
-            ['wrong', 'correct', 'wrong', 'wrong', 'wrong', 'wrong', 'wrong', 'higher'],
+            [
+              'wrong',
+              'correct',
+              'wrong',
+              'wrong',
+              'wrong',
+              'wrong',
+              'wrong',
+              'higher',
+            ],
           ],
         }).guessRows,
       ).to.deep.equal([
-        ['wrong', 'correct', 'wrong', 'wrong', 'wrong', 'wrong', 'wrong', 'higher'],
+        [
+          'wrong',
+          'correct',
+          'wrong',
+          'wrong',
+          'wrong',
+          'wrong',
+          'wrong',
+          'higher',
+        ],
       ]);
 
       expect(
