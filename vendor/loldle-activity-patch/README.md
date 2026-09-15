@@ -1,15 +1,21 @@
 # loldle-activity companion patch (clickable share links)
 
-This agent could not push to `mingl1/loldle-activity` (no write permission). Apply these changes there:
+The bot board renders `stringName (@discordName)` and links `stringName` to
+`shareImageUrl`. Those fields come from the Activity/Convex side.
 
-1. From a checkout of `loldle-activity`:
-   `git apply /path/to/loldle-bot/vendor/loldle-activity-patch/clickable-share-links.patch`
-2. Or copy files from `files/` over the matching paths.
-3. Set Convex/Activity env `SHARE_CHANNEL_ID` to a private Discord channel the bot can post in.
-4. Redeploy the Activity + Convex (`npx convex deploy`).
+## Apply in `loldle-activity`
 
-## What it does
+1. Copy files from `files/` onto the matching paths, **or**
+   `git apply vendor/loldle-activity-patch/clickable-share-links.patch`
+2. Set Activity/Robo env: `SHARE_CHANNEL_ID` = private Discord channel ID the
+   bot can post attachments into (required for links; names still sync without it)
+3. Deploy Convex so schema/mutations include the new fields:
+   `npx convex deploy`
+4. Redeploy the Activity (Robo/hosting)
 
-- `/api/share` uploads PNGs to `SHARE_CHANNEL_ID` (no user DM) and returns the CDN URL.
-- On guess/finish, Activity generates the existing grid share image, hosts it, and stores `shareImageUrl`, `stringName`, `discordName` on `channelProgress`.
-- `GET /channel-progress` exposes those fields for the bot board.
+## Behavior
+
+- `/api/share` posts the PNG to `SHARE_CHANNEL_ID` (no user DM) and returns the CDN URL
+- On guess/finish, Activity upserts `stringName` / `discordName` / guess state
+  immediately, then uploads the share image and patches `shareImageUrl`
+- `GET /channel-progress` returns those fields for the bot worker

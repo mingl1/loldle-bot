@@ -913,6 +913,18 @@ describe('Server', () => {
         }),
       ).to.equal('actual_handle');
 
+      // Never render bare Discord mentions (they show as numeric IDs in embeds).
+      expect(
+        formatPlayerDisplayName({
+          userId: '99',
+        }),
+      ).to.equal('Unknown');
+      expect(
+        formatPlayerDisplayName({
+          userId: '99',
+        }),
+      ).to.not.include('<@');
+
       expect(
         formatPlayerDisplayName({
           stringName: 'Aria',
