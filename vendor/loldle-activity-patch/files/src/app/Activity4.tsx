@@ -567,7 +567,8 @@ export const Activity4 = () => {
 		if (lastShareSyncRef.current === signature) return
 		lastShareSyncRef.current = signature
 		void (async () => {
-			const shareImageUrl = guessCount > 0 ? await uploadShareImage(rows) : null
+			// Persist names/guesses immediately so the board never falls back to
+			// bare user IDs if share upload is slow or SHARE_CHANNEL_ID is unset.
 			void upsertChannelProgress({
 				channelId,
 				dateKey,
@@ -577,8 +578,23 @@ export const Activity4 = () => {
 				discordName,
 				guessCount,
 				solved,
-				...(shareImageUrl ? { shareImageUrl } : {}),
 			})
+			if (guessCount > 0) {
+				const shareImageUrl = await uploadShareImage(rows)
+				if (shareImageUrl) {
+					void upsertChannelProgress({
+						channelId,
+						dateKey,
+						userId,
+						username: stringName,
+						stringName,
+						discordName,
+						guessCount,
+						solved,
+						shareImageUrl,
+					})
+				}
+			}
 		})()
 	}
 

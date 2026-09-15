@@ -87,46 +87,52 @@ export function getDiscordVisibleName({ member, user } = {}) {
   return username || 'Unknown';
 }
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 export function normalizePlayer(player = {}) {
-  const username = player.username ?? player.name ?? 'Unknown';
+  const username =
+    firstNonEmptyString(player.username, player.name) ?? 'Unknown';
   const stringName =
-    player.stringName ??
-    player.string_name ??
-    player.displayName ??
-    player.display_name ??
-    username;
-  const discordName =
-    player.discordName ??
-    player.discord_name ??
-    player.discordUsername ??
-    player.discord_username ??
-    null;
-  const shareImageUrl =
-    player.shareImageUrl ??
-    player.share_image_url ??
-    player.shareUrl ??
-    player.share_url ??
-    null;
+    firstNonEmptyString(
+      player.stringName,
+      player.string_name,
+      player.displayName,
+      player.display_name,
+      username !== 'Unknown' ? username : null,
+    ) ?? 'Unknown';
+  const discordName = firstNonEmptyString(
+    player.discordName,
+    player.discord_name,
+    player.discordUsername,
+    player.discord_username,
+  );
+  const shareImageUrl = firstNonEmptyString(
+    player.shareImageUrl,
+    player.share_image_url,
+    player.shareUrl,
+    player.share_url,
+  );
 
   return {
     userId: player.userId ?? player.user_id ?? player.id,
     username,
     stringName,
-    discordName:
-      typeof discordName === 'string' && discordName.trim()
-        ? discordName.trim()
-        : null,
-    shareImageUrl:
-      typeof shareImageUrl === 'string' && shareImageUrl.trim()
-        ? shareImageUrl.trim()
-        : null,
+    discordName,
+    shareImageUrl,
     guessCount: player.guessCount ?? player.guess_count ?? player.guesses ?? 0,
     solved: Boolean(player.solved ?? player.isSolved ?? false),
   };
 }
 
 /**
- * Escape Discord markdown link label/destination breakers in display names.
+ * Escape Discord markdown link label breakers in display names.
  */
 export function escapeMarkdownLinkText(text = '') {
   return String(text).replace(/[[\]]/g, '\\$&');
@@ -134,8 +140,10 @@ export function escapeMarkdownLinkText(text = '') {
 
 /**
  * Board label: `[stringName](shareImageUrl) (@discordName)` when a share URL
- * exists; otherwise `stringName (@discordName)`. Falls back to a user mention
- * only when no string/discord names are available but userId is.
+ * exists; otherwise `stringName (@discordName)`.
+ *
+ * Never uses `<@userId>` mentions — Discord often renders those as raw
+ * numeric IDs in embed descriptions when the member isn't cached.
  */
 export function formatPlayerDisplayName(player = {}) {
   const normalized = normalizePlayer(player);
@@ -152,15 +160,7 @@ export function formatPlayerDisplayName(player = {}) {
     return `[${label}](${normalized.shareImageUrl})${handleSuffix}`;
   }
 
-  if (stringName && stringName !== 'Unknown') {
-    return `${stringName}${handleSuffix}`;
-  }
-
-  if (normalized.userId) {
-    return `<@${normalized.userId}>${handleSuffix}`;
-  }
-
-  return `Unknown${handleSuffix}`;
+  return `${stringName}${handleSuffix}`;
 }
 
 export function getFewestSolvedGuessCount(players = []) {
