@@ -49,7 +49,17 @@ router.get('/', (request, env) => {
  *   "channelId": "...",
  *   "dateKey": "YYYY-MM-DD",   // optional
  *   "messageId": "...",        // optional — skip channel history lookup
- *   "players": [ ... ]         // optional — paint board from this snapshot
+ *   "players": [               // optional — paint board from this snapshot
+ *     {
+ *       "userId": "...",
+ *       "username": "...",            // legacy display fallback
+ *       "stringName": "...",          // clickable label (display name)
+ *       "discordName": "...",         // shown as (@discordName)
+ *       "shareImageUrl": "https://…", // CDN URL for share PNG
+ *       "guessCount": 3,
+ *       "solved": false
+ *     }
+ *   ]
  * }
  *
  * Returns quickly (202) when waitUntil is available so a fast Activity exit

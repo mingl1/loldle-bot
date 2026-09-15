@@ -154,7 +154,7 @@ describe('Server', () => {
       const editCall = fetchStub.getCalls().find((c) => c.args[0] === editUrl);
       expect(editCall.args[1].method).to.equal('PATCH');
       const payload = JSON.parse(editCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('<@1>');
+      expect(payload.embeds[0].description).to.include('**bming**');
     });
 
     it('should accept sync via waitUntil so a quick exit still finishes', async () => {
@@ -253,7 +253,7 @@ describe('Server', () => {
         .filter((c) => c.args[0] === editUrl);
       expect(editCalls.length).to.be.at.least(2);
       const lastPayload = JSON.parse(editCalls.at(-1).args[1].body);
-      expect(lastPayload.embeds[0].description).to.include('👑 **<@1>**');
+      expect(lastPayload.embeds[0].description).to.include('👑 **bming**');
       expect(lastPayload.embeds[0].description).to.include('15/∞');
     });
 
@@ -310,7 +310,7 @@ describe('Server', () => {
       expect(body.action).to.equal('edited');
       expect(fetchStub.calledOnce).to.equal(true);
       const payload = JSON.parse(fetchStub.firstCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('👑 **<@1>**');
+      expect(payload.embeds[0].description).to.include('👑 **bming**');
       expect(payload.embeds[0].description).to.include('8/∞');
     });
   });
@@ -493,9 +493,9 @@ describe('Server', () => {
       expect(createCall.args[1].method).to.equal('POST');
       const payload = JSON.parse(createCall.args[1].body);
       expect(payload.embeds[0].title).to.equal(`Loldle — ${dateKey}`);
-      expect(payload.embeds[0].description).to.include('👑 **<@1>**');
-      expect(payload.embeds[0].description).to.include('<@2>');
-      expect(payload.embeds[0].description).to.not.include('👑 **<@2>**');
+      expect(payload.embeds[0].description).to.include('👑 **Alice**');
+      expect(payload.embeds[0].description).to.include('**Bob**');
+      expect(payload.embeds[0].description).to.not.include('👑 **Bob**');
       expect(payload.components).to.deep.equal(
         buildProgressMessageComponents(),
       );
@@ -595,7 +595,7 @@ describe('Server', () => {
         .find((c) => c.args[0] === createUrl);
       expect(createCall).to.exist;
       const payload = JSON.parse(createCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('<@u-play>');
+      expect(payload.embeds[0].description).to.include('**PlayerOne**');
       expect(payload.components[0].components[0].custom_id).to.equal(
         LOLDLE_PLAY_CUSTOM_ID,
       );
@@ -708,7 +708,7 @@ describe('Server', () => {
       expect(editCall).to.exist;
       expect(editCall.args[1].method).to.equal('PATCH');
       const payload = JSON.parse(editCall.args[1].body);
-      expect(payload.embeds[0].description).to.include('<@2>');
+      expect(payload.embeds[0].description).to.include('**bming**');
       expect(payload.embeds[0].description).to.include('15');
       expect(payload.components).to.deep.equal(
         buildProgressMessageComponents(),
@@ -856,6 +856,9 @@ describe('Server', () => {
         {
           userId: 'u1',
           username: 'bming',
+          stringName: 'bming',
+          discordName: 'bming',
+          shareImageUrl: null,
           guessCount: 0,
           solved: false,
         },
@@ -895,7 +898,7 @@ describe('Server', () => {
       });
     });
 
-    it('formats board names as mentions so Discord shows server-visible names', () => {
+    it('formats board names as stringName (@discordName) with optional share links', () => {
       expect(
         getDiscordVisibleName({
           member: { nick: 'Server Nick' },
@@ -908,7 +911,38 @@ describe('Server', () => {
           userId: '99',
           username: 'actual_handle',
         }),
-      ).to.equal('<@99>');
+      ).to.equal('actual_handle');
+
+      expect(
+        formatPlayerDisplayName({
+          stringName: 'Aria',
+          discordName: 'aria_handle',
+          shareImageUrl: 'https://cdn.discordapp.com/attachments/1/2/a.png',
+        }),
+      ).to.equal(
+        '[Aria](https://cdn.discordapp.com/attachments/1/2/a.png) (@aria_handle)',
+      );
+
+      expect(
+        formatProgressLines([
+          {
+            stringName: 'Aria',
+            discordName: 'aria_handle',
+            shareImageUrl: 'https://cdn.discordapp.com/attachments/1/2/a.png',
+            guessCount: 3,
+            solved: true,
+          },
+          {
+            stringName: 'Jax',
+            discordName: 'jax_handle',
+            guessCount: 2,
+            solved: false,
+          },
+        ]),
+      ).to.deep.equal([
+        '👑 [Aria](https://cdn.discordapp.com/attachments/1/2/a.png) (@aria_handle) — 3/∞',
+        '🔄 **Jax (@jax_handle)** — 2 guesses',
+      ]);
 
       expect(
         formatProgressLines([
@@ -919,7 +953,7 @@ describe('Server', () => {
             solved: false,
           },
         ]),
-      ).to.deep.equal(['🔄 **<@99>** — 1 guess']);
+      ).to.deep.equal(['🔄 **actual_handle** — 1 guess']);
     });
 
     it('re-syncs the board on an absolute schedule after launch', async () => {
@@ -1033,7 +1067,7 @@ describe('Server', () => {
           .find((call) => call.args[0] === editUrl);
         expect(editCall).to.exist;
         const payload = JSON.parse(editCall.args[1].body);
-        expect(payload.embeds[0].description).to.include('<@u1>');
+        expect(payload.embeds[0].description).to.include('**bming**');
         expect(payload.embeds[0].description).to.include('2');
       } finally {
         fetchStub.restore();
